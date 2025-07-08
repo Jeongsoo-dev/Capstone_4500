@@ -14,12 +14,13 @@
 - 3 actuators are placed at triangle vertices
 - The platform moves in pitch (forward/back) and roll (left/right) around the center
 
-Actuator Min Length :	550 mm
-Actuator Max Length : 850 mm
-Actuator Stroke	: 300 mm
-Speed :	84 mm/s - full stroke in ~3.57 seconds
-Tilt Range :	±15° pitch and roll
-Arm Radius :	200 mm (distance from center to actuator mount)
+### Geometry Constants
+- Actuator Min Length :	550 mm
+- Actuator Max Length : 850 mm
+- Actuator Stroke	: 300 mm
+- Speed :	84 mm/s - full stroke in ~3.57 seconds
+- Tilt Range :	±15° pitch and roll
+- Arm Radius :	200 mm (distance from center to actuator mount)
 
 ## ESP32 Pin Assignments
 | Actuator | PWM Pin | DIR Pin |
