@@ -47,9 +47,11 @@ Device (PC or phone) connects directly to ESP32’s Wi-Fi
 
 ## Movement is Calculated
 1. Receive Command
+
 ESP32 receives pitch and roll (in degrees) via HTTP POST.
 
 2. Convert Pitch/Roll → Actuator Lengths
+
 Uses geometry-based inverse kinematics:
 
 - Assumes the platform tilts around center
