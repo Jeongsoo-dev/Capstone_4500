@@ -86,5 +86,46 @@ target = 550 + dz;
 - Actuators lift or lower to recreate tilt
 - Fully self-contained system: no external PC needed (just Wi-Fi)
 
+## ESP32 Development Environment Setup
 
+Follow these steps to configure your development environment for the ESP32 VR Chair project.
+
+---
+
+###  1. Install PlatformIO
+
+Install PlatformIO using Python’s `pip`:
+
+```bash
+python3 -m pip install platformio
+```
+
+
+###  2. Add PlatformIO to PATH
+
+Add PlatformIO’s installation path to your system PATH so it can be accessed from the terminal:
+
+```bash
+export PATH=$PATH:$HOME/.local/bin
+```
+
+###  3. Install Project Dependencies
+
+Navigate to the project directory and install all required libraries:
+
+```bash
+platformio lib install
+```
+
+###  4. Verify Installation
+
+Make sure all dependencies are correctly installed:
+
+ArduinoJson @ 6.21.5
+
+ESP32 platform and toolchain
+
+Arduino framework
+
+The project should now compile successfully with all libraries properly resolved.
 
