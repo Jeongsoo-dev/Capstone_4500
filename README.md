@@ -121,11 +121,11 @@ platformio lib install
 
 Make sure all dependencies are correctly installed:
 
-ArduinoJson @ 6.21.5
+• ArduinoJson @ 6.21.5
 
-ESP32 platform and toolchain
+• ESP32 platform and toolchain
 
-Arduino framework
+• Arduino framework
 
 The project should now compile successfully with all libraries properly resolved.
 
