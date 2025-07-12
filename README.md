@@ -1,26 +1,28 @@
 # ESP32-Based 2DOF VR Chair Control
 ## Hardware Overview
-1. ESP32
-   - Main controller with Wi-Fi capability
-2. BTS7960
-   - Motor driver for each actuator (PWM + DIR control)
-3. Actuators
-   - Worm gear linear actuators (550–850mm, 300mm stroke)
-4. Power
-   - 24V PSU powers actuators directly through BTS7960
+| Component      | Description                                    |
+| -------------- | ---------------------------------------------- |
+| **ESP32**      | Main microcontroller with Wi-Fi and PWM output |
+| **BTS7960 x3** | Dual H-bridge motor drivers (PWM + DIR)        |
+| **Actuators**  | 3 worm gear linear actuators (550–850 mm)      |
+| **Power**      | 24V PSU (shared across all drivers)            |
+
+Each actuator is individually controlled using PWM (speed) and a direction pin, enabling precise tilt movement in pitch and roll axes.
 
 ## Platform Geometry
-- The base and top are triangular frames
-- 3 actuators are placed at triangle vertices
-- The platform moves in pitch (forward/back) and roll (left/right) around the center
+- Structure: Triangular base and top frame
+
+- Movement: Chair tilts about center via actuator height adjustments
+
+- DOF: 2 (pitch and roll)
 
 ### Geometry Constants
-- Actuator Min Length :	550 mm
-- Actuator Max Length : 850 mm
-- Actuator Stroke	: 300 mm
-- Speed :	84 mm/s - full stroke in ~3.57 seconds
-- Tilt Range :	±15° pitch and roll
-- Arm Radius :	200 mm (distance from center to actuator mount)
+| Parameter       | Value                                     |
+| --------------- | ----------------------------------------- |
+| Actuator Stroke | 300 mm (550 mm → 850 mm)                  |
+| Max Speed       | 84 mm/s (full stroke ≈ 3.57 sec)          |
+| Tilt Range      | ±15° (pitch & roll)                       |
+| Arm Radius      | 200 mm (distance from center to actuator) |
 
 ## ESP32 Pin Assignments
 | Actuator | PWM Pin | DIR Pin |
@@ -29,62 +31,70 @@
 | B        | GPIO 19 | GPIO 17 |
 | C        | GPIO 21 | GPIO 16 |
 
+Each pin controls one BTS7960 driver with 20kHz PWM, providing smooth and quiet operation.
+
 ## Wi-Fi Communication
-### Mode:
-ESP32 acts as a Wi-Fi Access Point (AP)
-
-Device (PC or phone) connects directly to ESP32’s Wi-Fi
-
+### Access Point Mode:
 - SSID: StewartPlatform
 - Password: esp32vrchair
+- ESP32 hosts a WebSocket server on port 81
 
-### Server:
-- ESP32 runs a WebServer on port 80
-- Listens for POST /move requests
 
-### Format
-{ "pitch": 5.3, "roll": -3.0 }
+### Data Format
+{
+  "pitch": 5.3,
+  "roll": -3.0
+}
 
-## Movement is Calculated
-1. Receive Command
+### Motion Control Pipeline
+#### Real-Time WebSocket Control
+1. ESP32 receives pitch and roll angles via WebSocket.
 
-ESP32 receives pitch and roll (in degrees) via HTTP POST.
+2.Converts angles to target actuator lengths using inverse kinematics.
 
-2. Convert Pitch/Roll → Actuator Lengths
+3. Smoothly moves each actuator using velocity-limited interpolation.
 
-Uses geometry-based inverse kinematics:
+4. Motor direction is set based on delta sign; PWM duty is conditionally applied.
 
-- Assumes the platform tilts around center
-
-- Computes how much up/down each actuator must move to achieve pitch/roll
-
-- Uses sin() and cos() based on actuator angles: 0°, 120°, 240°
-
-Formula:
+#### Kinematics Formula
 dz = armRadius * (sin(pitch) * cos(angle) + sin(roll) * sin(angle));
-target = 550 + dz;
 
-3. Command Each Actuator (Open-loop Control)
-- Compare current vs. target length
-- Decide direction (increase/decrease)
-- Calculate duration = distance / speed
-- Run PWM for that duration
-- No feedback — we assume actuator moves at constant speed
+length = 550 + dz;
 
-## Open-Loop Motion Control
-| Step | Action                                   |
-| ---- | ---------------------------------------- |
-| 1    | Set direction pin (HIGH/LOW)             |
-| 2    | Turn on PWM at fixed duty (e.g. 200/255) |
-| 3    | Delay for time = (distance ÷ speed)      |
-| 4    | Stop PWM                                 |
+length = constrain(length, 550, 850);
 
-## Summary
-- ESP32 receives real-time tilt data over Wi-Fi
-- Converts pitch/roll to actuator lengths
-- Sends signals to 3 BTS7960 drivers
-- Actuators lift or lower to recreate tilt
-- Fully self-contained system: no external PC needed (just Wi-Fi)
+## Smooth Open-Loop Control
+| Step | Description                                              |
+| ---- | -------------------------------------------------------- |
+| 1    | Compute target length per actuator                       |
+| 2    | Use `stepTowards()` to incrementally move current length |
+| 3    | If Δ > 0.5 mm, apply PWM (`ledcWrite`) and direction     |
+| 4    | Repeat every 10 ms (100 Hz update loop)                  |
+
+No position feedback is used (open-loop), but timing and control logic provide stable and fluid motion.
+
+## Testing & Client Integration
+import websocket, json, time
+
+ws = websocket.WebSocket()
+
+ws.connect("ws://192.168.4.1:81")
+
+while True:
+    ws.send(json.dumps({"pitch": 5.0, "roll": -3.0}))
+    time.sleep(0.01)  # 100 Hz update rate
+    
+## System Summary
+- ESP32 runs in AP mode with built-in WebSocket server
+
+- Real-time motion control via WebSocket (sub-10ms latency)
+
+- Acceleration-limited actuator motion using open-loop logic
+
+-  Designed for integration with IMU-based Chair 1, CSV replay, or simulation streaming
 
 
-
+## Future Extensions
+1. Integration with ROS for IMU logging or visualization
+2. Closed-loop position feedback with encoders or potentiometers
+3. Vibration overlay channel (PWM superposition or pulse modulation)
