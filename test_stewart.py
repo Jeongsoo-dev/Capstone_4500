@@ -1,25 +1,25 @@
-import requests
-import time
+# Connect to ESP wifi and run this scipt
 
-URL = "http://192.168.4.1/move"
+import asyncio
+import websockets
+import json
 
-test_cases = [
-    {"pitch": 0.0, "roll": 0.0},
-    {"pitch": 10.0, "roll": 0.0},
-    {"pitch": -10.0, "roll": 0.0},
-    {"pitch": 0.0, "roll": 10.0},
-    {"pitch": 0.0, "roll": -10.0},
-    {"pitch": 10.0, "roll": 10.0},
-    {"pitch": -10.0, "roll": -10.0},
-    {"pitch": 15.0, "roll": -15.0},
-    {"pitch": -15.0, "roll": 15.0}
-]
-
-for case in test_cases:
-    print(f"Sending: pitch={case['pitch']}, roll={case['roll']}")
+async def send_pitch_roll():
+    uri = "ws://192.168.4.1:81"  # IP of ESP32
     try:
-        response = requests.post(URL, json=case, timeout=2)
-        print("Response:", response.text)
+        async with websockets.connect(uri) as websocket:
+            print("Connected to ESP32 WebSocket Server.")
+            while True:
+                try:
+                    pitch = float(input("Enter pitch angle (°): "))
+                    roll = float(input("Enter roll angle (°): "))
+                    payload = json.dumps({"pitch": pitch, "roll": roll})
+                    await websocket.send(payload)
+                    print(f"Sent: {payload}")
+                except ValueError:
+                    print("Invalid input. Use numeric values only.")
     except Exception as e:
-        print("Failed:", e)
-    time.sleep(3)
+        print(f" Connection error: {e}")
+
+if __name__ == "__main__":
+    asyncio.run(send_pitch_roll())
