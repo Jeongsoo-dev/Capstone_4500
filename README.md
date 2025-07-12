@@ -52,7 +52,7 @@ Each pin controls one BTS7960 driver with 20kHz PWM, providing smooth and quiet 
 
 1. ESP32 receives pitch and roll angles via WebSocket.
 
-2.Converts angles to target actuator lengths using inverse kinematics.
+2. Converts angles to target actuator lengths using inverse kinematics.
 
 3. Smoothly moves each actuator using velocity-limited interpolation.
 
