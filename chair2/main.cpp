@@ -97,22 +97,84 @@ void loop() {
 
 // ===== WebSocket Event Handler =====
 void onWebSocketEvent(uint8_t client, WStype_t type, uint8_t *payload, size_t length) {
-  if (type == WStype_TEXT) {
-    StaticJsonDocument<200> doc;
-    DeserializationError error = deserializeJson(doc, payload);
-    if (error) {
-      Serial.println("[!] Invalid JSON received.");
-      return;
+  switch (type) {
+    case WStype_DISCONNECTED:
+      Serial.printf("[WS] Client #%u disconnected\n", client);
+      break;
+      
+    case WStype_CONNECTED: {
+      IPAddress ip = webSocket.remoteIP(client);
+      Serial.printf("[WS] Client #%u connected from %d.%d.%d.%d\n", 
+                    client, ip[0], ip[1], ip[2], ip[3]);
+      
+      // Send welcome message
+      webSocket.sendTXT(client, "{\"status\":\"connected\",\"message\":\"Stewart Platform Ready\"}");
+      break;
     }
+    
+    case WStype_TEXT:
+      // Validate message size
+      if (length > 1024) {  // Reasonable limit for JSON payload
+        Serial.printf("[WS] Message too large (%u bytes), ignoring\n", length);
+        webSocket.sendTXT(client, "{\"status\":\"error\",\"message\":\"Message too large\"}");
+        return;
+      }
+      
+      Serial.printf("[WS] Received from client #%u: %s\n", client, payload);
+      
+      {
+        StaticJsonDocument<512> doc;  // Increased size for larger JSON payload
+        DeserializationError error = deserializeJson(doc, payload);
+        if (error) {
+          Serial.printf("[WS] JSON parse error: %s\n", error.c_str());
+          webSocket.sendTXT(client, "{\"status\":\"error\",\"message\":\"Invalid JSON\"}");
+          return;
+        }
 
-    float pitch = doc["pitch"] | 0.0;
-    float roll  = doc["roll"]  | 0.0;
+        // Extract pitch and roll from nested structure
+        float pitch = doc["motion"]["orientation"]["pitch"] | 0.0;
+        float roll  = doc["motion"]["orientation"]["roll"]  | 0.0;
+        float yaw   = doc["motion"]["orientation"]["yaw"]   | 0.0;
+        
+        // Extract timestamp for reference
+        unsigned long timestamp = doc["timestamp"] | 0;
+        
+        // Extract control mode
+        const char* mode = doc["control"]["mode"] | "realtime";
+        const char* speed = doc["control"]["response_speed"] | "fast";
 
-    Serial.printf("[WS] pitch: %.2f°, roll: %.2f°\n", pitch, roll);
+        Serial.printf("[WS] timestamp: %lu, pitch: %.2f°, roll: %.2f°, yaw: %.2f°\n", 
+                      timestamp, pitch, roll, yaw);
+        Serial.printf("[WS] mode: %s, speed: %s\n", mode, speed);
 
-    targetLengthA = computeActuatorLength(pitch, roll, 0);
-    targetLengthB = computeActuatorLength(pitch, roll, 120);
-    targetLengthC = computeActuatorLength(pitch, roll, 240);
+        // Use pitch and roll for actuator control (keeping existing logic)
+        targetLengthA = computeActuatorLength(pitch, roll, 0);
+        targetLengthB = computeActuatorLength(pitch, roll, 120);
+        targetLengthC = computeActuatorLength(pitch, roll, 240);
+        
+        // Send acknowledgment
+        webSocket.sendTXT(client, "{\"status\":\"ok\",\"message\":\"Motion data received\"}");
+      }
+      break;
+      
+    case WStype_BIN:
+      Serial.printf("[WS] Binary data received (%u bytes), ignoring\n", length);
+      break;
+      
+    case WStype_ERROR:
+      Serial.printf("[WS] Error occurred with client #%u\n", client);
+      break;
+      
+    case WStype_FRAGMENT_TEXT_START:
+    case WStype_FRAGMENT_BIN_START:
+    case WStype_FRAGMENT:
+    case WStype_FRAGMENT_FIN:
+      Serial.printf("[WS] Fragmented message received, ignoring\n");
+      break;
+      
+    default:
+      Serial.printf("[WS] Unknown WebSocket event type: %d\n", type);
+      break;
   }
 }
 
