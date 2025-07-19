@@ -38,7 +38,11 @@ struct IMUData {
 // COMMUNICATION MODE CONFIGURATION
 // =============================================================================
 // Set to true for Bluetooth, false for UART/Serial communication
+// If having BLE issues, try setting this to false first to test basic functionality
 const bool USE_BLUETOOTH_MODE = true;
+
+// DEBUG MODE - Set to true for additional debugging output
+const bool DEBUG_MODE = true;
 
 // BLE Configuration - REPLACE WITH YOUR IMU'S ACTUAL UUIDs
 // NOTE: These are common WT901SDCL UUIDs - verify with your specific device
@@ -85,6 +89,19 @@ class MyClientCallback : public BLEClientCallbacks {
 class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
   void onResult(BLEAdvertisedDevice advertisedDevice) override {
     debugPrintf("Found device: %s", advertisedDevice.toString().c_str());
+    debugPrintf("  - Name: %s", advertisedDevice.getName().c_str());
+    debugPrintf("  - Address: %s", advertisedDevice.getAddress().toString().c_str());
+    debugPrintf("  - RSSI: %d", advertisedDevice.getRSSI());
+    
+    // Show all service UUIDs this device advertises
+    if (advertisedDevice.haveServiceUUID()) {
+      debugPrint("  - Advertised Service UUIDs:");
+      for (int i = 0; i < advertisedDevice.getServiceUUIDCount(); i++) {
+        debugPrintf("    * %s", advertisedDevice.getServiceUUID(i).toString().c_str());
+      }
+    } else {
+      debugPrint("  - No service UUIDs advertised");
+    }
     
     // Check if this device has our service UUID
     if (advertisedDevice.haveServiceUUID() && advertisedDevice.isAdvertisingService(SERVICE_UUID)) {
@@ -102,7 +119,10 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
         debugPrint("Failed to connect");
         bleConnecting = false;
       }
+    } else {
+      debugPrint("  - Does not match our target service UUID");
     }
+    debugPrint("  ---");
   }
 };
 
@@ -137,11 +157,30 @@ void setup() {
 
 void loop() {
   if (USE_BLUETOOTH_MODE) {
+    // Debug: Show current BLE state
+    static unsigned long lastStatusTime = 0;
+    if (millis() - lastStatusTime > 3000) {
+      debugPrintf("BLE Status - Connected: %s, Connecting: %s", 
+                  bleConnected ? "YES" : "NO", 
+                  bleConnecting ? "YES" : "NO");
+      lastStatusTime = millis();
+    }
+    
     // Handle BLE connection state
     if (!bleConnected && !bleConnecting) {
       debugPrint("Attempting to reconnect to IMU...");
       scanForIMU();
       delay(5000); // Wait before retry
+    }
+    
+    // Try to establish service connection after BLE connection
+    if (bleConnected && pRemoteCharacteristic == nullptr) {
+      debugPrint("BLE connected, establishing service connection...");
+      if (connectToIMU()) {
+        debugPrint("Service connection established successfully");
+      } else {
+        debugPrint("Failed to establish service connection");
+      }
     }
     
     // Show status if no packets received for a while
@@ -179,13 +218,25 @@ void scanForIMU() {
   bleConnecting = true;
   debugPrint("Scanning for IMU device...");
   debugPrintf("Looking for service UUID: %s", SERVICE_UUID.toString().c_str());
+  debugPrint("Scan will run for 10 seconds...");
   
   BLEScan* pBLEScan = BLEDevice::getScan();
   pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
   pBLEScan->setInterval(1349);
   pBLEScan->setWindow(449);
   pBLEScan->setActiveScan(true);
-  pBLEScan->start(10, false); // Scan for 10 seconds
+  
+  // Start scan with completion callback
+  BLEScanResults foundDevices = pBLEScan->start(10, false); // Scan for 10 seconds
+  
+  // Scan completed
+  debugPrintf("Scan completed. Found %d devices total", foundDevices.getCount());
+  
+  // If we didn't connect during scan, reset connecting flag
+  if (!bleConnected) {
+    bleConnecting = false;
+    debugPrint("No matching IMU device found during scan");
+  }
 }
 
 bool connectToIMU() {
