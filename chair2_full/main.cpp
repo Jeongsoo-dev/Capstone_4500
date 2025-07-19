@@ -6,7 +6,7 @@
 #include <BLEAdvertisedDevice.h>
 
 // Include pin definitions
-#include "pin_definitions.cpp"
+#include "pin_definitions.h"
 
 // =============================================================================
 // STEWART PLATFORM CONFIGURATION
@@ -85,10 +85,6 @@ void setMotorSpeed(int motor, int speed);
 void stopAllMotors();
 void onNotify(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
 void processIMUData();  // Common IMU processing
-// Debug functions (from pin_definitions.cpp)
-void setupDebugUART2();
-void debugPrint(String message);
-void debugPrintf(const char* format, ...);
 
 // =============================================================================
 // BLE CALLBACK CLASSES

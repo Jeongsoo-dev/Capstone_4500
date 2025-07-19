@@ -4,6 +4,7 @@
 #include <BLEUtils.h>
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
+#include "pin_definitions.h"
 
 // =============================================================================
 // IMU DATA MONITOR - Dual Mode (Bluetooth 5.0 + UART)
@@ -64,10 +65,6 @@ bool parseFullIMUPacket(uint8_t* data, size_t length);
 bool parseFullIMUPacketUART();  // For UART mode
 void printIMUData();
 void onNotify(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
-// Debug functions (from pin_definitions.cpp)
-void setupDebugUART2();
-void debugPrint(String message);
-void debugPrintf(const char* format, ...);
 
 // BLE Client Callbacks
 class MyClientCallback : public BLEClientCallbacks {
