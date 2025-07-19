@@ -73,13 +73,13 @@ void onNotify(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData,
 // BLE Client Callbacks
 class MyClientCallback : public BLEClientCallbacks {
   void onConnect(BLEClient* pclient) override {
-    debugPrint("Connected to IMU device");
+    debugPrint("BLE CLIENT CALLBACK: Connected to IMU device");
     bleConnected = true;
     bleConnecting = false;
   }
 
   void onDisconnect(BLEClient* pclient) override {
-    debugPrint("Disconnected from IMU device");
+    debugPrint("BLE CLIENT CALLBACK: Disconnected from IMU device");
     bleConnected = false;
     bleConnecting = false;
   }
@@ -179,11 +179,11 @@ void loop() {
     
     // Try to establish service connection after BLE connection
     if (bleConnected && pRemoteCharacteristic == nullptr) {
-      debugPrint("BLE connected, establishing service connection...");
+      debugPrint(">>> BLE connected, establishing service connection...");
       if (connectToIMU()) {
-        debugPrint("Service connection established successfully");
+        debugPrint(">>> Service connection established successfully");
       } else {
-        debugPrint("Failed to establish service connection");
+        debugPrint(">>> Failed to establish service connection");
         // If service connection fails, disconnect and retry
         bleConnected = false;
         if (pClient != nullptr) {
@@ -285,17 +285,26 @@ void scanForIMU() {
 }
 
 bool connectToIMU() {
-  if (!bleConnected || pClient == nullptr) return false;
-  
-  debugPrint("Getting IMU service...");
-  BLERemoteService* pRemoteService = pClient->getService(SERVICE_UUID);
-  if (pRemoteService == nullptr) {
-    debugPrint("Failed to find IMU service");
+  debugPrint("*** connectToIMU() called");
+  if (!bleConnected || pClient == nullptr) {
+    debugPrintf("*** Early return: bleConnected=%s, pClient=%s", 
+                bleConnected ? "true" : "false", 
+                pClient ? "valid" : "null");
     return false;
   }
   
-  debugPrint("Getting IMU characteristic...");
+  debugPrint("*** Getting IMU service...");
+  BLERemoteService* pRemoteService = pClient->getService(SERVICE_UUID);
+  debugPrint("*** getService() call completed");
+  
+  if (pRemoteService == nullptr) {
+    debugPrint("*** Failed to find IMU service");
+    return false;
+  }
+  
+  debugPrint("*** Getting IMU characteristic...");
   pRemoteCharacteristic = pRemoteService->getCharacteristic(CHAR_UUID);
+  debugPrint("*** getCharacteristic() call completed");
   if (pRemoteCharacteristic == nullptr) {
     debugPrint("Failed to find IMU characteristic");
     
