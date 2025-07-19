@@ -298,18 +298,37 @@ bool connectToIMU() {
   pRemoteCharacteristic = pRemoteService->getCharacteristic(CHAR_UUID);
   if (pRemoteCharacteristic == nullptr) {
     debugPrint("Failed to find IMU characteristic");
+    
+    // Try to get all characteristics and show what's available
+    debugPrint("Available characteristics:");
+    std::map<std::string, BLERemoteCharacteristic*>* charMap = pRemoteService->getCharacteristics();
+    for (auto& pair : *charMap) {
+      debugPrintf("  - %s", pair.first.c_str());
+    }
     return false;
   }
   
-  // Register for notifications
-  if (pRemoteCharacteristic->canNotify()) {
-    pRemoteCharacteristic->registerForNotify(onNotify);
-    debugPrint("BLE notifications registered");
-    return true;
-  }
+  debugPrint("Found IMU characteristic, setting up notifications...");
   
-  debugPrint("Characteristic does not support notifications");
-  return false;
+  // Try to register for notifications without checking descriptors first
+  try {
+    pRemoteCharacteristic->registerForNotify(onNotify);
+    debugPrint("BLE notifications registered successfully");
+    
+    // Try to subscribe to notifications by writing to CCCD
+    uint8_t notificationOn[] = {0x1, 0x0};
+    if (pRemoteCharacteristic->getDescriptor(BLEUUID((uint16_t)0x2902)) != nullptr) {
+      pRemoteCharacteristic->getDescriptor(BLEUUID((uint16_t)0x2902))->writeValue((uint8_t*)notificationOn, 2, true);
+      debugPrint("CCCD descriptor written");
+    } else {
+      debugPrint("No CCCD descriptor found, but notification callback registered");
+    }
+    
+    return true;
+  } catch (std::exception& e) {
+    debugPrintf("Exception during notification setup: %s", e.what());
+    return false;
+  }
 }
 
 // BLE notification callback
