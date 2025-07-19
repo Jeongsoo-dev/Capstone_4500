@@ -4,9 +4,6 @@
 #include <BLEUtils.h>
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
-#include <esp_bt.h>
-#include <esp_bt_main.h>
-#include <esp_gap_ble_api.h>
 #include "pin_definitions.h"
 
 // =============================================================================
@@ -59,7 +56,6 @@ bool bleConnecting = false;
 BLEAdvertisedDevice* targetDevice = nullptr;
 bool deviceFound = false;
 unsigned long connectionStartTime = 0;
-int failedConnectionAttempts = 0;
 
 IMUData imuData;
 unsigned long lastPacketTime = 0;
@@ -69,7 +65,6 @@ int packetCount = 0;
 bool initializeBLE();
 bool connectToIMU();
 void scanForIMU();
-void resetBLE();
 bool parseFullIMUPacket(uint8_t* data, size_t length);
 bool parseFullIMUPacketUART();  // For UART mode
 void printIMUData();
@@ -78,26 +73,15 @@ void onNotify(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData,
 // BLE Client Callbacks
 class MyClientCallback : public BLEClientCallbacks {
   void onConnect(BLEClient* pclient) override {
-    debugPrint("✓ BLE connection established to IMU device");
-    debugPrintf("Connected to: %s", pclient->getPeerAddress().toString().c_str());
+    debugPrint("Connected to IMU device");
     bleConnected = true;
     bleConnecting = false;
-    
-    // Reset counters for new connection
-    packetCount = 0;
-    lastPacketTime = millis();
-    failedConnectionAttempts = 0; // Reset failure counter on successful connection
   }
 
   void onDisconnect(BLEClient* pclient) override {
-    debugPrint("✗ Disconnected from IMU device");
+    debugPrint("Disconnected from IMU device");
     bleConnected = false;
     bleConnecting = false;
-    
-    // Clean up characteristic reference
-    pRemoteCharacteristic = nullptr;
-    
-    debugPrint("Will attempt reconnection in 10 seconds...");
   }
 };
 
@@ -141,18 +125,8 @@ void setup() {
     debugPrint("==== IMU Data Monitor (Bluetooth 5.0) Starting ====");
     debugPrint("Initializing Bluetooth Low Energy...");
     
-    // Check ESP32 capabilities
-    debugPrintf("ESP32 Chip Model: %s", ESP.getChipModel());
-    debugPrintf("ESP32 Revision: %d", ESP.getChipRevision());
-    debugPrintf("Free Heap: %d bytes", ESP.getFreeHeap());
-    
     if (initializeBLE()) {
       debugPrint("BLE initialized successfully");
-      
-      // Wait a bit more before first scan attempt
-      debugPrint("Waiting for BLE stack to stabilize...");
-      delay(2000);
-      
       scanForIMU();
     } else {
       debugPrint("BLE initialization failed!");
@@ -182,35 +156,14 @@ void loop() {
       lastStatusTime = millis();
     }
     
-    // Handle connection timeout and progress monitoring
-    if (bleConnecting && !bleConnected) {
-      unsigned long connectionDuration = millis() - connectionStartTime;
-      
-      // Show connection progress every 2 seconds
-      static unsigned long lastProgressTime = 0;
-      if (millis() - lastProgressTime > 2000) {
-        debugPrintf("Connection in progress... %lu seconds elapsed", connectionDuration / 1000);
-        lastProgressTime = millis();
-      }
-      
-      // Timeout after 15 seconds
-      if (connectionDuration > 15000) {
-        debugPrint("Connection timeout - resetting connection state");
-        bleConnecting = false;
-        failedConnectionAttempts++;
-        
-        if (pClient != nullptr) {
-          pClient->disconnect();
-          delete pClient;
-          pClient = nullptr;
-        }
-        
-        // Reset BLE stack after 3 failed attempts
-        if (failedConnectionAttempts >= 3) {
-          debugPrintf("Multiple connection failures (%d), resetting BLE stack...", failedConnectionAttempts);
-          resetBLE();
-          failedConnectionAttempts = 0;
-        }
+    // Handle connection timeout
+    if (bleConnecting && !bleConnected && millis() - connectionStartTime > 8000) {
+      debugPrint("Connection timeout (8 seconds) - resetting connection state");
+      bleConnecting = false;
+      if (pClient != nullptr) {
+        pClient->disconnect();
+        delete pClient;
+        pClient = nullptr;
       }
     }
     
@@ -264,68 +217,8 @@ void loop() {
 }
 
 bool initializeBLE() {
-  debugPrint("Initializing BLE device...");
-  
-  // Ensure clean BLE state first
-  BLEDevice::deinit(false);
-  delay(500);
-  
-  // Initialize BLE with specific configuration
   BLEDevice::init("Stewart_Platform_Monitor");
-  
-  // Wait for BLE stack to be ready
-  delay(1000);
-  
-  // Set BLE power level for better range (with error checking)
-  esp_err_t err;
-  err = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P7);
-  if (err != ESP_OK) {
-    debugPrintf("Warning: Failed to set default BLE power: %d", err);
-  }
-  
-  err = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN, ESP_PWR_LVL_P7);
-  if (err != ESP_OK) {
-    debugPrintf("Warning: Failed to set scan BLE power: %d", err);
-  }
-  
-  debugPrint("BLE device initialized successfully");
   return true;
-}
-
-void resetBLE() {
-  debugPrint("Resetting BLE stack...");
-  
-  // Clean up existing connections
-  if (pClient != nullptr) {
-    if (bleConnected) {
-      pClient->disconnect();
-    }
-    delete pClient;
-    pClient = nullptr;
-  }
-  
-  pRemoteCharacteristic = nullptr;
-  bleConnected = false;
-  bleConnecting = false;
-  deviceFound = false;
-  
-  if (targetDevice != nullptr) {
-    delete targetDevice;
-    targetDevice = nullptr;
-  }
-  
-  // Deinitialize BLE completely
-  debugPrint("Deinitializing BLE stack...");
-  BLEDevice::deinit(true); // true = release all memory
-  delay(2000); // Longer delay for complete cleanup
-  
-  debugPrint("Reinitializing BLE stack...");
-  // Reinitialize
-  if (initializeBLE()) {
-    debugPrint("BLE stack reset and reinitialization complete");
-  } else {
-    debugPrint("BLE stack reinitialization failed");
-  }
 }
 
 void scanForIMU() {
@@ -344,89 +237,44 @@ void scanForIMU() {
   debugPrint("Scan will run for 10 seconds...");
   
   BLEScan* pBLEScan = BLEDevice::getScan();
-  if (pBLEScan == nullptr) {
-    debugPrint("Failed to get BLE scan object");
-    bleConnecting = false;
-    return;
-  }
-  
-  // Clear any existing callbacks first
-  pBLEScan->setAdvertisedDeviceCallbacks(nullptr);
-  delay(100);
-  
-  // Set callbacks and parameters
   pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
-  
-  // Use safer scan parameters (interval and window in 0.625ms units)
-  // These parameters are within BLE spec limits
-  pBLEScan->setInterval(0x50);  // 80 * 0.625ms = 50ms
-  pBLEScan->setWindow(0x30);    // 48 * 0.625ms = 30ms
+  pBLEScan->setInterval(1349);
+  pBLEScan->setWindow(449);
   pBLEScan->setActiveScan(true);
   
-  debugPrint("Starting BLE scan with safe parameters...");
-  
-  // Start scan with error handling
-  BLEScanResults foundDevices;
-  try {
-    foundDevices = pBLEScan->start(10, false); // Scan for 10 seconds
-    debugPrint("BLE scan completed successfully");
-  } catch (...) {
-    debugPrint("BLE scan failed - resetting BLE stack");
-    resetBLE();
-    bleConnecting = false;
-    return;
-  }
+  // Start scan 
+  BLEScanResults foundDevices = pBLEScan->start(10, false); // Scan for 10 seconds
   
   // Scan completed
   debugPrintf("Scan completed. Found %d devices total", foundDevices.getCount());
   
   // Check if we found our target device
   if (deviceFound && targetDevice != nullptr) {
-    debugPrint("Target device found, starting connection process...");
-    debugPrintf("Device details: Name='%s', Address=%s, RSSI=%d", 
-                targetDevice->getName().c_str(),
-                targetDevice->getAddress().toString().c_str(), 
-                targetDevice->getRSSI());
+    debugPrint("Target device found, attempting connection...");
     
     // Clean up any existing client
     if (pClient != nullptr) {
       pClient->disconnect();
       delete pClient;
-      pClient = nullptr;
     }
     
     pClient = BLEDevice::createClient();
     pClient->setClientCallbacks(new MyClientCallback());
     
-    // Set connection parameters for better reliability
-    pClient->setMTU(517); // Set larger MTU for better throughput
-    
-    // Add delay before connection attempt
-    delay(100);
-    
     connectionStartTime = millis();
-    debugPrint("Initiating BLE connection...");
-    debugPrintf("Connecting to device: %s", targetDevice->getAddress().toString().c_str());
+    debugPrint("Calling pClient->connect()...");
     
-    // Try connection with explicit error handling
-    bleConnecting = true;
+    bool connectResult = pClient->connect(targetDevice);
+    debugPrintf("pClient->connect() returned: %s", connectResult ? "SUCCESS" : "FAILED");
     
-    try {
-      // Attempt BLE connection
-      bool connectResult = pClient->connect(targetDevice);
-      
-      if (connectResult) {
-        debugPrint("BLE connection request initiated successfully");
-        // Connection state will be updated in callbacks
-      } else {
-        debugPrint("BLE connection request failed");
-        bleConnecting = false;
-        delete pClient;
-        pClient = nullptr;
-      }
-    } catch (...) {
-      debugPrint("Exception during BLE connection attempt");
+    if (connectResult) {
+      debugPrint("BLE connection established successfully");
+      bleConnected = true;
       bleConnecting = false;
+    } else {
+      debugPrint("Failed to establish BLE connection");
+      bleConnecting = false;
+      // Clean up failed client
       delete pClient;
       pClient = nullptr;
     }
