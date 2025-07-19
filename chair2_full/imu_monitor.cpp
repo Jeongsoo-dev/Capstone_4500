@@ -4,6 +4,9 @@
 #include <BLEUtils.h>
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
+#include <esp_bt.h>
+#include <esp_bt_main.h>
+#include <esp_gap_ble_api.h>
 #include "pin_definitions.h"
 
 // =============================================================================
@@ -56,6 +59,7 @@ bool bleConnecting = false;
 BLEAdvertisedDevice* targetDevice = nullptr;
 bool deviceFound = false;
 unsigned long connectionStartTime = 0;
+int failedConnectionAttempts = 0;
 
 IMUData imuData;
 unsigned long lastPacketTime = 0;
@@ -65,6 +69,7 @@ int packetCount = 0;
 bool initializeBLE();
 bool connectToIMU();
 void scanForIMU();
+void resetBLE();
 bool parseFullIMUPacket(uint8_t* data, size_t length);
 bool parseFullIMUPacketUART();  // For UART mode
 void printIMUData();
@@ -73,15 +78,26 @@ void onNotify(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData,
 // BLE Client Callbacks
 class MyClientCallback : public BLEClientCallbacks {
   void onConnect(BLEClient* pclient) override {
-    debugPrint("Connected to IMU device");
+    debugPrint("✓ BLE connection established to IMU device");
+    debugPrintf("Connected to: %s", pclient->getPeerAddress().toString().c_str());
     bleConnected = true;
     bleConnecting = false;
+    
+    // Reset counters for new connection
+    packetCount = 0;
+    lastPacketTime = millis();
+    failedConnectionAttempts = 0; // Reset failure counter on successful connection
   }
 
   void onDisconnect(BLEClient* pclient) override {
-    debugPrint("Disconnected from IMU device");
+    debugPrint("✗ Disconnected from IMU device");
     bleConnected = false;
     bleConnecting = false;
+    
+    // Clean up characteristic reference
+    pRemoteCharacteristic = nullptr;
+    
+    debugPrint("Will attempt reconnection in 10 seconds...");
   }
 };
 
@@ -156,14 +172,35 @@ void loop() {
       lastStatusTime = millis();
     }
     
-    // Handle connection timeout
-    if (bleConnecting && !bleConnected && millis() - connectionStartTime > 15000) {
-      debugPrint("Connection timeout - resetting connection state");
-      bleConnecting = false;
-      if (pClient != nullptr) {
-        pClient->disconnect();
-        delete pClient;
-        pClient = nullptr;
+    // Handle connection timeout and progress monitoring
+    if (bleConnecting && !bleConnected) {
+      unsigned long connectionDuration = millis() - connectionStartTime;
+      
+      // Show connection progress every 2 seconds
+      static unsigned long lastProgressTime = 0;
+      if (millis() - lastProgressTime > 2000) {
+        debugPrintf("Connection in progress... %lu seconds elapsed", connectionDuration / 1000);
+        lastProgressTime = millis();
+      }
+      
+      // Timeout after 15 seconds
+      if (connectionDuration > 15000) {
+        debugPrint("Connection timeout - resetting connection state");
+        bleConnecting = false;
+        failedConnectionAttempts++;
+        
+        if (pClient != nullptr) {
+          pClient->disconnect();
+          delete pClient;
+          pClient = nullptr;
+        }
+        
+        // Reset BLE stack after 3 failed attempts
+        if (failedConnectionAttempts >= 3) {
+          debugPrintf("Multiple connection failures (%d), resetting BLE stack...", failedConnectionAttempts);
+          resetBLE();
+          failedConnectionAttempts = 0;
+        }
       }
     }
     
@@ -217,8 +254,50 @@ void loop() {
 }
 
 bool initializeBLE() {
+  debugPrint("Initializing BLE device...");
+  
+  // Initialize BLE with specific configuration
   BLEDevice::init("Stewart_Platform_Monitor");
+  
+  // Set BLE power level for better range
+  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);
+  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
+  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN, ESP_PWR_LVL_P9);
+  
+  debugPrint("BLE device initialized with high power settings");
   return true;
+}
+
+void resetBLE() {
+  debugPrint("Resetting BLE stack...");
+  
+  // Clean up existing connections
+  if (pClient != nullptr) {
+    if (bleConnected) {
+      pClient->disconnect();
+    }
+    delete pClient;
+    pClient = nullptr;
+  }
+  
+  pRemoteCharacteristic = nullptr;
+  bleConnected = false;
+  bleConnecting = false;
+  deviceFound = false;
+  
+  if (targetDevice != nullptr) {
+    delete targetDevice;
+    targetDevice = nullptr;
+  }
+  
+  // Deinitialize and reinitialize BLE
+  BLEDevice::deinit(false);
+  delay(1000);
+  
+  // Reinitialize
+  initializeBLE();
+  
+  debugPrint("BLE stack reset complete");
 }
 
 void scanForIMU() {
@@ -250,26 +329,51 @@ void scanForIMU() {
   
   // Check if we found our target device
   if (deviceFound && targetDevice != nullptr) {
-    debugPrint("Target device found, attempting connection...");
+    debugPrint("Target device found, starting connection process...");
+    debugPrintf("Device details: Name='%s', Address=%s, RSSI=%d", 
+                targetDevice->getName().c_str(),
+                targetDevice->getAddress().toString().c_str(), 
+                targetDevice->getRSSI());
     
     // Clean up any existing client
     if (pClient != nullptr) {
       pClient->disconnect();
       delete pClient;
+      pClient = nullptr;
     }
     
     pClient = BLEDevice::createClient();
     pClient->setClientCallbacks(new MyClientCallback());
     
+    // Set connection parameters for better reliability
+    pClient->setMTU(517); // Set larger MTU for better throughput
+    
+    // Add delay before connection attempt
+    delay(100);
+    
     connectionStartTime = millis();
-    if (pClient->connect(targetDevice)) {
-      debugPrint("BLE connection established successfully");
-      bleConnected = true;
+    debugPrint("Initiating BLE connection...");
+    debugPrintf("Connecting to device: %s", targetDevice->getAddress().toString().c_str());
+    
+    // Try connection with explicit error handling
+    bleConnecting = true;
+    
+    try {
+      // Attempt BLE connection
+      bool connectResult = pClient->connect(targetDevice);
+      
+      if (connectResult) {
+        debugPrint("BLE connection request initiated successfully");
+        // Connection state will be updated in callbacks
+      } else {
+        debugPrint("BLE connection request failed");
+        bleConnecting = false;
+        delete pClient;
+        pClient = nullptr;
+      }
+    } catch (...) {
+      debugPrint("Exception during BLE connection attempt");
       bleConnecting = false;
-    } else {
-      debugPrint("Failed to establish BLE connection");
-      bleConnecting = false;
-      // Clean up failed client
       delete pClient;
       pClient = nullptr;
     }
