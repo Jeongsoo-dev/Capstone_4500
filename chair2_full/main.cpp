@@ -26,8 +26,8 @@ const bool USE_BLUETOOTH_MODE = true;
 
 // BLE Configuration - REPLACE WITH YOUR IMU'S ACTUAL UUIDs
 // NOTE: These are placeholder UUIDs - you MUST replace them with your device's actual UUIDs
-static BLEUUID SERVICE_UUID("0000ffe5-0000-1000-8000-00805f9b34fb");    // Update for your device
-static BLEUUID CHAR_UUID("0000ffe9-0000-1000-8000-00805f9b34fb");       // Update for your device
+static BLEUUID SERVICE_UUID("0000ffe5-0000-1000-8000-00805f9a34fb");    // Update for your device
+static BLEUUID CHAR_UUID("0000ffe9-0000-1000-8000-00805f9a34fb");       // Update for your device
 
 // BLE Variables
 BLEClient* pClient = nullptr;

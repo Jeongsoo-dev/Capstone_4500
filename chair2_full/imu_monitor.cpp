@@ -45,17 +45,17 @@ const bool USE_BLUETOOTH_MODE = true;
 const bool DEBUG_MODE = true;
 
 // BLE Configuration - REPLACE WITH YOUR IMU'S ACTUAL UUIDs
-// NOTE: These are common WT901SDCL UUIDs - verify with your specific device
-// Service UUID: 0000ffe0-0000-1000-8000-00805f9b34fb (Nordic UART Service)
-// Characteristic UUID: 0000ffe1-0000-1000-8000-00805f9b34fb (TX Characteristic)
-static BLEUUID SERVICE_UUID("0000ffe5-0000-1000-8000-00805f9b34fb");    // Update for your device
-static BLEUUID CHAR_UUID("0000ffe9-0000-1000-8000-00805f9b34fb");       // Update for your device
+static BLEUUID SERVICE_UUID("0000ffe5-0000-1000-8000-00805f9a34fb");    // Update for your device
+static BLEUUID CHAR_UUID("0000ffe9-0000-1000-8000-00805f9a34fb");       // Update for your device
 
 // BLE Variables
 BLEClient* pClient = nullptr;
 BLERemoteCharacteristic* pRemoteCharacteristic = nullptr;
 bool bleConnected = false;
 bool bleConnecting = false;
+BLEAdvertisedDevice* targetDevice = nullptr;
+bool deviceFound = false;
+unsigned long connectionStartTime = 0;
 
 IMUData imuData;
 unsigned long lastPacketTime = 0;
@@ -105,20 +105,10 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
     
     // Check if this device has our service UUID
     if (advertisedDevice.haveServiceUUID() && advertisedDevice.isAdvertisingService(SERVICE_UUID)) {
-      debugPrint("Found IMU device! Attempting to connect...");
+      debugPrint("Found target IMU device! Stopping scan...");
+      deviceFound = true;
+      targetDevice = new BLEAdvertisedDevice(advertisedDevice);
       BLEDevice::getScan()->stop();
-      
-      pClient = BLEDevice::createClient();
-      pClient->setClientCallbacks(new MyClientCallback());
-      
-      if (pClient->connect(&advertisedDevice)) {
-        debugPrint("Connection established");
-        bleConnecting = false;
-        bleConnected = true;
-      } else {
-        debugPrint("Failed to connect");
-        bleConnecting = false;
-      }
     } else {
       debugPrint("  - Does not match our target service UUID");
     }
@@ -166,11 +156,25 @@ void loop() {
       lastStatusTime = millis();
     }
     
-    // Handle BLE connection state
+    // Handle connection timeout
+    if (bleConnecting && !bleConnected && millis() - connectionStartTime > 15000) {
+      debugPrint("Connection timeout - resetting connection state");
+      bleConnecting = false;
+      if (pClient != nullptr) {
+        pClient->disconnect();
+        delete pClient;
+        pClient = nullptr;
+      }
+    }
+    
+    // Handle BLE connection state with retry delay
+    static unsigned long lastScanTime = 0;
     if (!bleConnected && !bleConnecting) {
-      debugPrint("Attempting to reconnect to IMU...");
-      scanForIMU();
-      delay(5000); // Wait before retry
+      if (millis() - lastScanTime > 10000) { // Wait 10 seconds between scan attempts
+        debugPrint("Attempting to connect to IMU...");
+        scanForIMU();
+        lastScanTime = millis();
+      }
     }
     
     // Try to establish service connection after BLE connection
@@ -180,11 +184,16 @@ void loop() {
         debugPrint("Service connection established successfully");
       } else {
         debugPrint("Failed to establish service connection");
+        // If service connection fails, disconnect and retry
+        bleConnected = false;
+        if (pClient != nullptr) {
+          pClient->disconnect();
+        }
       }
     }
     
     // Show status if no packets received for a while
-    if (bleConnected && millis() - lastPacketTime > 5000 && packetCount == 0) {
+    if (bleConnected && pRemoteCharacteristic != nullptr && millis() - lastPacketTime > 5000 && packetCount == 0) {
       debugPrint("No IMU packets received yet. Check IMU configuration and UUIDs.");
       lastPacketTime = millis(); // Prevent spam
     }
@@ -215,6 +224,13 @@ bool initializeBLE() {
 void scanForIMU() {
   if (bleConnecting) return;
   
+  // Reset flags
+  deviceFound = false;
+  if (targetDevice != nullptr) {
+    delete targetDevice;
+    targetDevice = nullptr;
+  }
+  
   bleConnecting = true;
   debugPrint("Scanning for IMU device...");
   debugPrintf("Looking for service UUID: %s", SERVICE_UUID.toString().c_str());
@@ -226,14 +242,38 @@ void scanForIMU() {
   pBLEScan->setWindow(449);
   pBLEScan->setActiveScan(true);
   
-  // Start scan with completion callback
+  // Start scan 
   BLEScanResults foundDevices = pBLEScan->start(10, false); // Scan for 10 seconds
   
   // Scan completed
   debugPrintf("Scan completed. Found %d devices total", foundDevices.getCount());
   
-  // If we didn't connect during scan, reset connecting flag
-  if (!bleConnected) {
+  // Check if we found our target device
+  if (deviceFound && targetDevice != nullptr) {
+    debugPrint("Target device found, attempting connection...");
+    
+    // Clean up any existing client
+    if (pClient != nullptr) {
+      pClient->disconnect();
+      delete pClient;
+    }
+    
+    pClient = BLEDevice::createClient();
+    pClient->setClientCallbacks(new MyClientCallback());
+    
+    connectionStartTime = millis();
+    if (pClient->connect(targetDevice)) {
+      debugPrint("BLE connection established successfully");
+      bleConnected = true;
+      bleConnecting = false;
+    } else {
+      debugPrint("Failed to establish BLE connection");
+      bleConnecting = false;
+      // Clean up failed client
+      delete pClient;
+      pClient = nullptr;
+    }
+  } else {
     bleConnecting = false;
     debugPrint("No matching IMU device found during scan");
   }
