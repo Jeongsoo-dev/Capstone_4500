@@ -141,8 +141,18 @@ void setup() {
     debugPrint("==== IMU Data Monitor (Bluetooth 5.0) Starting ====");
     debugPrint("Initializing Bluetooth Low Energy...");
     
+    // Check ESP32 capabilities
+    debugPrintf("ESP32 Chip Model: %s", ESP.getChipModel());
+    debugPrintf("ESP32 Revision: %d", ESP.getChipRevision());
+    debugPrintf("Free Heap: %d bytes", ESP.getFreeHeap());
+    
     if (initializeBLE()) {
       debugPrint("BLE initialized successfully");
+      
+      // Wait a bit more before first scan attempt
+      debugPrint("Waiting for BLE stack to stabilize...");
+      delay(2000);
+      
       scanForIMU();
     } else {
       debugPrint("BLE initialization failed!");
@@ -256,15 +266,29 @@ void loop() {
 bool initializeBLE() {
   debugPrint("Initializing BLE device...");
   
+  // Ensure clean BLE state first
+  BLEDevice::deinit(false);
+  delay(500);
+  
   // Initialize BLE with specific configuration
   BLEDevice::init("Stewart_Platform_Monitor");
   
-  // Set BLE power level for better range
-  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);
-  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
-  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN, ESP_PWR_LVL_P9);
+  // Wait for BLE stack to be ready
+  delay(1000);
   
-  debugPrint("BLE device initialized with high power settings");
+  // Set BLE power level for better range (with error checking)
+  esp_err_t err;
+  err = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P7);
+  if (err != ESP_OK) {
+    debugPrintf("Warning: Failed to set default BLE power: %d", err);
+  }
+  
+  err = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN, ESP_PWR_LVL_P7);
+  if (err != ESP_OK) {
+    debugPrintf("Warning: Failed to set scan BLE power: %d", err);
+  }
+  
+  debugPrint("BLE device initialized successfully");
   return true;
 }
 
@@ -290,14 +314,18 @@ void resetBLE() {
     targetDevice = nullptr;
   }
   
-  // Deinitialize and reinitialize BLE
-  BLEDevice::deinit(false);
-  delay(1000);
+  // Deinitialize BLE completely
+  debugPrint("Deinitializing BLE stack...");
+  BLEDevice::deinit(true); // true = release all memory
+  delay(2000); // Longer delay for complete cleanup
   
+  debugPrint("Reinitializing BLE stack...");
   // Reinitialize
-  initializeBLE();
-  
-  debugPrint("BLE stack reset complete");
+  if (initializeBLE()) {
+    debugPrint("BLE stack reset and reinitialization complete");
+  } else {
+    debugPrint("BLE stack reinitialization failed");
+  }
 }
 
 void scanForIMU() {
@@ -316,13 +344,38 @@ void scanForIMU() {
   debugPrint("Scan will run for 10 seconds...");
   
   BLEScan* pBLEScan = BLEDevice::getScan();
+  if (pBLEScan == nullptr) {
+    debugPrint("Failed to get BLE scan object");
+    bleConnecting = false;
+    return;
+  }
+  
+  // Clear any existing callbacks first
+  pBLEScan->setAdvertisedDeviceCallbacks(nullptr);
+  delay(100);
+  
+  // Set callbacks and parameters
   pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
-  pBLEScan->setInterval(1349);
-  pBLEScan->setWindow(449);
+  
+  // Use safer scan parameters (interval and window in 0.625ms units)
+  // These parameters are within BLE spec limits
+  pBLEScan->setInterval(0x50);  // 80 * 0.625ms = 50ms
+  pBLEScan->setWindow(0x30);    // 48 * 0.625ms = 30ms
   pBLEScan->setActiveScan(true);
   
-  // Start scan 
-  BLEScanResults foundDevices = pBLEScan->start(10, false); // Scan for 10 seconds
+  debugPrint("Starting BLE scan with safe parameters...");
+  
+  // Start scan with error handling
+  BLEScanResults foundDevices;
+  try {
+    foundDevices = pBLEScan->start(10, false); // Scan for 10 seconds
+    debugPrint("BLE scan completed successfully");
+  } catch (...) {
+    debugPrint("BLE scan failed - resetting BLE stack");
+    resetBLE();
+    bleConnecting = false;
+    return;
+  }
   
   // Scan completed
   debugPrintf("Scan completed. Found %d devices total", foundDevices.getCount());
