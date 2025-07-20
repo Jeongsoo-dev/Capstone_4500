@@ -44,24 +44,15 @@ const bool USE_BLUETOOTH_MODE = true;
 // DEBUG MODE - Set to true for additional debugging output
 const bool DEBUG_MODE = true;
 
-// BLE Configuration - CORRECTED UUIDs based on protocol analysis
-// TROUBLESHOOTING: If connection fails, try these alternative UUID sets:
-// Option 1 (Your original code):
-static BLEUUID SERVICE_UUID("0000ffe5-0000-1000-8000-00805f9a34fb");
-static BLEUUID NOTIFY_CHAR_UUID("0000ffe9-0000-1000-8000-00805f9a34fb");
-static BLEUUID WRITE_CHAR_UUID("0000ffe4-0000-1000-8000-00805f9a34fb");
-//
-// Option 2 (From README):
-// static BLEUUID SERVICE_UUID("0000ffe5-0000-1000-8000-00805f9b34fb");
-// static BLEUUID NOTIFY_CHAR_UUID("0000ffe9-0000-1000-8000-00805f9b34fb");
-// static BLEUUID WRITE_CHAR_UUID("0000ffe4-0000-1000-8000-00805f9b34fb");
-//
-// The code automatically tries these alternatives during connection
+// BLE Configuration - Using the actual UUIDs found via LightBlue
+static BLEUUID SERVICE_UUID("0000ffe5-0000-1000-8000-00805f9a34fb");        // Main service  
+static BLEUUID NOTIFY_CHAR_UUID("0000ffe9-0000-1000-8000-00805f9a34fb");    // Notify-only characteristic
+static BLEUUID WRITE_CHAR_UUID("0000ffe4-0000-1000-8000-00805f9a34fb");     // Write-only characteristic
 
 // BLE Variables
 BLEClient* pClient = nullptr;
-BLERemoteCharacteristic* pNotifyCharacteristic = nullptr;   // For receiving data
-BLERemoteCharacteristic* pWriteCharacteristic = nullptr;    // For sending commands
+BLERemoteCharacteristic* pNotifyCharacteristic = nullptr;  // For receiving data
+BLERemoteCharacteristic* pWriteCharacteristic = nullptr;   // For sending commands
 bool bleConnected = false;
 bool bleConnecting = false;
 BLEAdvertisedDevice* targetDevice = nullptr;
@@ -114,44 +105,14 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
       debugPrint("  - No service UUIDs advertised");
     }
     
-    // Check if this device has our service UUID or is a likely IMU device
-    bool isTargetDevice = false;
-    
+    // Check if this device has our service UUID
     if (advertisedDevice.haveServiceUUID() && advertisedDevice.isAdvertisingService(SERVICE_UUID)) {
-      debugPrint("Found device with exact service UUID match!");
-      isTargetDevice = true;
-    } 
-    // Also check for common IMU device names or alternative service UUIDs
-    else if (advertisedDevice.haveName()) {
-      String deviceName = String(advertisedDevice.getName().c_str());
-      deviceName.toLowerCase();
-      if (deviceName.indexOf("wt901") >= 0 || 
-          deviceName.indexOf("wit") >= 0 || 
-          deviceName.indexOf("imu") >= 0 ||
-          deviceName.indexOf("mpu") >= 0 ||
-          deviceName.indexOf("sensor") >= 0) {
-        debugPrintf("Found potential IMU device by name: %s", deviceName.c_str());
-        isTargetDevice = true;
-      }
-    }
-    // Check alternative service UUIDs
-    else if (advertisedDevice.haveServiceUUID()) {
-      BLEUUID altService1("0000ffe5-0000-1000-8000-00805f9a34fb");
-      BLEUUID altService2("0000ffe5-0000-1000-8000-00805f9b34fb");
-      if (advertisedDevice.isAdvertisingService(altService1) || 
-          advertisedDevice.isAdvertisingService(altService2)) {
-        debugPrint("Found device with alternative service UUID!");
-        isTargetDevice = true;
-      }
-    }
-    
-    if (isTargetDevice) {
-      debugPrint("Target IMU device identified! Stopping scan...");
+      debugPrint("Found target IMU device! Stopping scan...");
       deviceFound = true;
       targetDevice = new BLEAdvertisedDevice(advertisedDevice);
       BLEDevice::getScan()->stop();
     } else {
-      debugPrint("  - Not identified as target IMU device");
+      debugPrint("  - Does not match our target service UUID");
     }
     debugPrint("  ---");
   }
@@ -213,7 +174,7 @@ void loop() {
     if (!bleConnected && !bleConnecting) {
       if (millis() - lastScanTime > 10000) { // Wait 10 seconds between scan attempts
         debugPrint("Attempting to connect to IMU...");
-      scanForIMU();
+        scanForIMU();
         lastScanTime = millis();
       }
     }
@@ -235,26 +196,7 @@ void loop() {
     
     // Show status if no packets received for a while
     if (bleConnected && pNotifyCharacteristic != nullptr && millis() - lastPacketTime > 5000 && packetCount == 0) {
-      debugPrint("No IMU packets received yet. Trying direct read...");
-      
-      // Try reading directly from the characteristic
-      if (pNotifyCharacteristic->canRead()) {
-        debugPrint("Attempting direct characteristic read...");
-        std::string value = pNotifyCharacteristic->readValue();
-        if (value.length() > 0) {
-          debugPrintf("Direct read got %d bytes:", value.length());
-          for(int i = 0; i < value.length() && i < 32; i++) {
-            Serial2.printf("0x%02X ", (uint8_t)value[i]);
-            if((i + 1) % 8 == 0) Serial2.println();
-          }
-          Serial2.println();
-        } else {
-          debugPrint("Direct read returned no data");
-        }
-      } else {
-        debugPrint("Characteristic is not readable");
-      }
-      
+      debugPrint("No IMU packets received yet. Check IMU configuration and UUIDs.");
       lastPacketTime = millis(); // Prevent spam
     }
   } else {
@@ -355,136 +297,80 @@ bool connectToIMU() {
   
   debugPrint("*** Getting IMU service...");
   BLERemoteService* pRemoteService = pClient->getService(SERVICE_UUID);
-  debugPrint("*** Primary service getService() call completed");
-  
-  // If primary service not found, try alternative UUIDs
-  if (pRemoteService == nullptr) {
-    debugPrint("*** Primary service not found, trying alternatives...");
-    BLEUUID altService1("0000ffe5-0000-1000-8000-00805f9a34fb");
-    BLEUUID altService2("0000ffe5-0000-1000-8000-00805f9b34fb");
-    
-    pRemoteService = pClient->getService(altService1);
-    if (pRemoteService == nullptr) {
-      pRemoteService = pClient->getService(altService2);
-    }
-    
-    if (pRemoteService != nullptr) {
-      debugPrint("*** Found service using alternative UUID");
-    }
-  }
+  debugPrint("*** getService() call completed");
   
   if (pRemoteService == nullptr) {
-    debugPrint("*** Failed to find any compatible IMU service");
-    
-    // List all available services for debugging
-    debugPrint("*** Available services on device:");
-    std::map<std::string, BLERemoteService*>* serviceMap = pClient->getServices();
-    for (auto& pair : *serviceMap) {
-      debugPrintf("    Service: %s", pair.first.c_str());
-    }
+    debugPrint("*** Failed to find IMU service");
     return false;
   }
   
-  debugPrint("*** Getting notify characteristic...");
+  debugPrint("*** Getting IMU characteristic...");
   pNotifyCharacteristic = pRemoteService->getCharacteristic(NOTIFY_CHAR_UUID);
-  debugPrint("*** getNotifyCharacteristic() call completed");
-  
-  debugPrint("*** Getting write characteristic...");
-  pWriteCharacteristic = pRemoteService->getCharacteristic(WRITE_CHAR_UUID);
-  debugPrint("*** getWriteCharacteristic() call completed");
-  
-  // If characteristics not found, try alternatives
-  if (pNotifyCharacteristic == nullptr || pWriteCharacteristic == nullptr) {
-    debugPrint("*** Primary characteristics not found, trying alternatives...");
-    
-    // Alternative UUIDs for characteristics  
-    BLEUUID altNotify1("0000ffe9-0000-1000-8000-00805f9a34fb");
-    BLEUUID altNotify2("0000ffe9-0000-1000-8000-00805f9b34fb");
-    BLEUUID altWrite1("0000ffe4-0000-1000-8000-00805f9a34fb");
-    BLEUUID altWrite2("0000ffe4-0000-1000-8000-00805f9b34fb");
-    
-    if (pNotifyCharacteristic == nullptr) {
-      pNotifyCharacteristic = pRemoteService->getCharacteristic(altNotify1);
-      if (pNotifyCharacteristic == nullptr) {
-        pNotifyCharacteristic = pRemoteService->getCharacteristic(altNotify2);
-      }
-    }
-    
-    if (pWriteCharacteristic == nullptr) {
-      pWriteCharacteristic = pRemoteService->getCharacteristic(altWrite1);
-      if (pWriteCharacteristic == nullptr) {
-        pWriteCharacteristic = pRemoteService->getCharacteristic(altWrite2);
-      }
-    }
-    
-    // For some IMU devices, the same characteristic handles both read/write
-    if (pNotifyCharacteristic != nullptr && pWriteCharacteristic == nullptr) {
-      debugPrint("*** Using notify characteristic for both read and write");
-      pWriteCharacteristic = pNotifyCharacteristic;
-    }
-  }
-  
-  if (pNotifyCharacteristic == nullptr || pWriteCharacteristic == nullptr) {
-    debugPrintf("Failed to find characteristics - Notify: %s, Write: %s", 
-                pNotifyCharacteristic ? "OK" : "MISSING",
-                pWriteCharacteristic ? "OK" : "MISSING");
+  debugPrint("*** getCharacteristic() call completed");
+  if (pNotifyCharacteristic == nullptr) {
+    debugPrint("Failed to find IMU notify characteristic");
     
     // Try to get all characteristics and show what's available
     debugPrint("Available characteristics:");
     std::map<std::string, BLERemoteCharacteristic*>* charMap = pRemoteService->getCharacteristics();
     for (auto& pair : *charMap) {
-      BLERemoteCharacteristic* pChar = pair.second;
-      debugPrintf("  - %s (Properties: %s%s%s%s)", 
-                  pair.first.c_str(),
-                  pChar->canRead() ? "R" : "-",
-                  pChar->canWrite() ? "W" : "-",
-                  pChar->canNotify() ? "N" : "-",
-                  pChar->canIndicate() ? "I" : "-");
+      debugPrintf("  - %s", pair.first.c_str());
     }
     return false;
   }
   
-  debugPrint("Found both characteristics, setting up notifications...");
+  debugPrint("*** Getting IMU write characteristic...");
+  pWriteCharacteristic = pRemoteService->getCharacteristic(WRITE_CHAR_UUID);
+  if (pWriteCharacteristic == nullptr) {
+    debugPrint("Failed to find IMU write characteristic");
+    return false;
+  }
   
-  // Try to register for notifications without checking descriptors first
+  debugPrint("Found both IMU characteristics, setting up notifications...");
+  
+  // Register for notifications on the notify-only characteristic
   try {
     pNotifyCharacteristic->registerForNotify(onNotify);
     debugPrint("BLE notifications registered successfully");
     
-    // Try to subscribe to notifications by writing to CCCD
-    uint8_t notificationOn[] = {0x1, 0x0};
-    if (pNotifyCharacteristic->getDescriptor(BLEUUID((uint16_t)0x2902)) != nullptr) {
-      pNotifyCharacteristic->getDescriptor(BLEUUID((uint16_t)0x2902))->writeValue((uint8_t*)notificationOn, 2, true);
-      debugPrint("CCCD descriptor written");
-    } else {
-      debugPrint("No CCCD descriptor found, but notification callback registered");
-    }
+    // WT901 devices often don't need CCCD or streaming commands
+    debugPrint("CCCD not needed for WT901 - checking if device streams automatically...");
     
-    // Try to start data transmission using protocol-compliant commands
-    delay(100);
-    debugPrint("Sending IMU initialization commands through WRITE characteristic...");
+    // Wait a moment to see if data comes automatically
+    delay(2000);
     
-    // Protocol-compliant WT901 commands based on documentation
-    uint8_t unlockCmd[] = {0xFF, 0xAA, 0x69, 0x88, 0xB5};   // Unlock register access
-    uint8_t setRate[] = {0xFF, 0xAA, 0x03, 0x0A, 0x00};     // Set output rate (10Hz)
-    uint8_t setBaud[] = {0xFF, 0xAA, 0x04, 0x06, 0x00};     // Set baud rate (115200)
-    uint8_t saveConfig[] = {0xFF, 0xAA, 0x00, 0x00, 0x00};  // Save configuration
-    uint8_t enableOutput[] = {0xFF, 0xAA, 0x02, 0x08, 0x00}; // Enable data output
+    // If no data comes automatically, try different commands
+    debugPrint("Testing different streaming commands...");
     
-    // Send commands with delays for processing
-    pWriteCharacteristic->writeValue(unlockCmd, 5, true);
-    delay(100);
-    pWriteCharacteristic->writeValue(setRate, 5, true);
-    delay(100);  
-    pWriteCharacteristic->writeValue(setBaud, 5, true);
-    delay(100);
-    pWriteCharacteristic->writeValue(saveConfig, 5, true);
-    delay(100);
-    pWriteCharacteristic->writeValue(enableOutput, 5, true);
-    delay(100);
+    // Try 1: No command (many WT901 devices stream automatically)
+    debugPrint("Attempt 1: Waiting for automatic streaming (no command needed)...");
+    delay(1000);
     
-    debugPrint("Protocol-compliant IMU initialization commands sent");
-    debugPrint("Commands: Unlock -> Set Rate (10Hz) -> Set Baud -> Save -> Enable Output");
+    // Try 2: Common WT901 command from documentation
+    debugPrint("Attempt 2: Sending documented WT901 command...");
+    uint8_t cmd1[] = {0xFF, 0xAA, 0x03, 0x08, 0x00, 0x0E};
+    pWriteCharacteristic->writeValue(cmd1, sizeof(cmd1), true);
+    delay(1000);
+    
+    // Try 3: Alternative command format
+    debugPrint("Attempt 3: Sending alternative format...");
+    uint8_t cmd2[] = {0xFF, 0xAA, 0x69, 0x88, 0xB5};  // Alternative start command
+    pWriteCharacteristic->writeValue(cmd2, sizeof(cmd2), true);
+    delay(1000);
+    
+    // Try 4: Simple wake up command
+    debugPrint("Attempt 4: Sending wake-up command...");
+    uint8_t cmd3[] = {0xFF, 0xAA, 0x01, 0x04, 0x00, 0x00};  // Wake up
+    pWriteCharacteristic->writeValue(cmd3, sizeof(cmd3), true);
+    delay(1000);
+    
+    // Try 5: Request data command
+    debugPrint("Attempt 5: Sending data request command...");
+    uint8_t cmd4[] = {0xFF, 0xAA, 0x01, 0x07, 0x00, 0x00};  // Request data
+    pWriteCharacteristic->writeValue(cmd4, sizeof(cmd4), true);
+    
+    debugPrint("All streaming commands attempted. Monitor should receive data if IMU is working.");
+    debugPrint("If no data appears, the issue may be with the IMU configuration or hardware.");
     
     return true;
   } catch (std::exception& e) {
@@ -495,86 +381,162 @@ bool connectToIMU() {
 
 // BLE notification callback
 void onNotify(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
-  debugPrintf("*** NOTIFICATION RECEIVED: %d bytes", length);
+  debugPrintf("🔔 NOTIFICATION RECEIVED! %d bytes", length);
   
-  // Always print raw data first to see what we're getting
-  debugPrint("Raw notification data:");
+  // Always show raw packet data for analysis
+  debugPrint("Raw packet data:");
   for(int i = 0; i < length && i < 32; i++) {
     Serial2.printf("0x%02X ", pData[i]);
     if((i + 1) % 8 == 0) Serial2.println();
   }
-  if(length > 0) Serial2.println();
+  if(length % 8 != 0) Serial2.println();  // Final newline if not divisible by 8
   
+  // Look for common WT901 packet headers
+  if (length >= 2) {
+    if (pData[0] == 0x55) {
+      debugPrintf("Found packet header 0x55, second byte: 0x%02X", pData[1]);
+      
+      // Common WT901 packet types:
+      if (pData[1] == 0x61) debugPrint("  -> Type: Acceleration + Angle data");
+      else if (pData[1] == 0x51) debugPrint("  -> Type: Acceleration data");
+      else if (pData[1] == 0x52) debugPrint("  -> Type: Angular velocity data"); 
+      else if (pData[1] == 0x53) debugPrint("  -> Type: Angle data");
+      else if (pData[1] == 0x54) debugPrint("  -> Type: Magnetic field data");
+      else if (pData[1] == 0x50) debugPrint("  -> Type: Time data");
+      else debugPrintf("  -> Type: Unknown (0x%02X)", pData[1]);
+    }
+  }
+  
+  // Try to parse the packet
   if (parseFullIMUPacket(pData, length)) {
     packetCount++;
     lastPacketTime = millis();
-    debugPrintf("Successfully parsed IMU packet #%d", packetCount);
+    debugPrintf("✅ Successfully parsed IMU packet #%d", packetCount);
     printIMUData();
   } else {
-    debugPrint("Data doesn't match expected IMU format (0x55 0x61)");
+    debugPrint("❌ Failed to parse IMU packet - analyzing structure:");
+    
+    // Detailed analysis for debugging
+    if (length < 20) {
+      debugPrintf("Packet too short (%d bytes) - need at least 20 bytes", length);
+    } else if (pData[0] != 0x55) {
+      debugPrintf("Wrong header byte 0x%02X - expected 0x55", pData[0]);
+    } else if (pData[1] != 0x61) {
+      debugPrintf("Wrong packet type 0x%02X - expected 0x61 for acceleration+angle data", pData[1]);
+    } else {
+      debugPrint("Header looks correct but parsing failed - check data format");
+    }
   }
 }
 
 // Parse IMU packet from BLE data
 bool parseFullIMUPacket(uint8_t* data, size_t length) {
-  // Check for minimum packet size (header + flag + 18 data bytes)
-  if (length < 20) return false;
+  // Check for minimum packet size (header + type + data)
+  if (length < 11) return false;
   
-  // Look for packet header (0x55 0x61)
-  if (data[0] == 0x55 && data[1] == 0x61) {
-    // Extract acceleration data (bytes 2-7)
-    int16_t axRaw = (data[3] << 8) | data[2];
-    int16_t ayRaw = (data[5] << 8) | data[4];  
-    int16_t azRaw = (data[7] << 8) | data[6];
-    
-    // Extract angular velocity data (bytes 8-13)
-    int16_t wxRaw = (data[9] << 8) | data[8];
-    int16_t wyRaw = (data[11] << 8) | data[10];
-    int16_t wzRaw = (data[13] << 8) | data[12];
-    
-    // Extract angle data (bytes 14-19)
-    int16_t rollRaw = (data[15] << 8) | data[14];
-    int16_t pitchRaw = (data[17] << 8) | data[16]; 
-    int16_t yawRaw = (data[19] << 8) | data[18];
-    
-    // Convert to physical units according to protocol
-    imuData.ax = (float)axRaw / 32768.0 * 16.0;      // ±16g
-    imuData.ay = (float)ayRaw / 32768.0 * 16.0;
-    imuData.az = (float)azRaw / 32768.0 * 16.0;
-    
-    imuData.wx = (float)wxRaw / 32768.0 * 2000.0;    // ±2000°/s
-    imuData.wy = (float)wyRaw / 32768.0 * 2000.0;
-    imuData.wz = (float)wzRaw / 32768.0 * 2000.0;
-    
-    imuData.roll = (float)rollRaw / 32768.0 * 180.0;  // ±180°
-    imuData.pitch = (float)pitchRaw / 32768.0 * 180.0;
-    imuData.yaw = (float)yawRaw / 32768.0 * 180.0;
-    
-    imuData.dataValid = true;
-    
-    // Parse optional time data if available (28-byte packet)
-    if (length >= 28) {
-      imuData.timestamp.year = data[20];
-      imuData.timestamp.month = data[21];
-      imuData.timestamp.day = data[22];
-      imuData.timestamp.hour = data[23];
-      imuData.timestamp.minute = data[24];
-      imuData.timestamp.second = data[25];
-      imuData.timestamp.millisecond = (data[27] << 8) | data[26]; // MSH MSL
-      imuData.timestamp.timeValid = true;
+  // Look for packet header (0x55)
+  if (data[0] != 0x55) return false;
+  
+  // Parse different packet types
+  switch (data[1]) {
+    case 0x51: { // Acceleration data
+      if (length < 11) return false;
+      int16_t axRaw = (data[3] << 8) | data[2];
+      int16_t ayRaw = (data[5] << 8) | data[4];  
+      int16_t azRaw = (data[7] << 8) | data[6];
       
-      debugPrintf("BLE Time: %02d/%02d/%02d %02d:%02d:%02d.%03d", 
-                  imuData.timestamp.year, imuData.timestamp.month, imuData.timestamp.day,
-                  imuData.timestamp.hour, imuData.timestamp.minute, imuData.timestamp.second,
-                  imuData.timestamp.millisecond);
-    } else {
-      imuData.timestamp.timeValid = false;
+      imuData.ax = (float)axRaw / 32768.0 * 16.0;      // ±16g
+      imuData.ay = (float)ayRaw / 32768.0 * 16.0;
+      imuData.az = (float)azRaw / 32768.0 * 16.0;
+      imuData.dataValid = true;
+      return true;
     }
     
-    return true;
+    case 0x52: { // Angular velocity data
+      if (length < 11) return false;
+      int16_t wxRaw = (data[3] << 8) | data[2];
+      int16_t wyRaw = (data[5] << 8) | data[4];
+      int16_t wzRaw = (data[7] << 8) | data[6];
+      
+      imuData.wx = (float)wxRaw / 32768.0 * 2000.0;    // ±2000°/s
+      imuData.wy = (float)wyRaw / 32768.0 * 2000.0;
+      imuData.wz = (float)wzRaw / 32768.0 * 2000.0;
+      imuData.dataValid = true;
+      return true;
+    }
+    
+    case 0x53: { // Angle data
+      if (length < 11) return false;
+      int16_t rollRaw = (data[3] << 8) | data[2];
+      int16_t pitchRaw = (data[5] << 8) | data[4]; 
+      int16_t yawRaw = (data[7] << 8) | data[6];
+      
+      imuData.roll = (float)rollRaw / 32768.0 * 180.0;  // ±180°
+      imuData.pitch = (float)pitchRaw / 32768.0 * 180.0;
+      imuData.yaw = (float)yawRaw / 32768.0 * 180.0;
+      imuData.dataValid = true;
+      return true;
+    }
+    
+    case 0x61: { // Combined acceleration + angle data (original format)
+      if (length < 20) return false;
+      
+      // Extract acceleration data (bytes 2-7)
+      int16_t axRaw = (data[3] << 8) | data[2];
+      int16_t ayRaw = (data[5] << 8) | data[4];  
+      int16_t azRaw = (data[7] << 8) | data[6];
+      
+      // Extract angular velocity data (bytes 8-13)
+      int16_t wxRaw = (data[9] << 8) | data[8];
+      int16_t wyRaw = (data[11] << 8) | data[10];
+      int16_t wzRaw = (data[13] << 8) | data[12];
+      
+      // Extract angle data (bytes 14-19)
+      int16_t rollRaw = (data[15] << 8) | data[14];
+      int16_t pitchRaw = (data[17] << 8) | data[16]; 
+      int16_t yawRaw = (data[19] << 8) | data[18];
+      
+      // Convert to physical units according to protocol
+      imuData.ax = (float)axRaw / 32768.0 * 16.0;      // ±16g
+      imuData.ay = (float)ayRaw / 32768.0 * 16.0;
+      imuData.az = (float)azRaw / 32768.0 * 16.0;
+      
+      imuData.wx = (float)wxRaw / 32768.0 * 2000.0;    // ±2000°/s
+      imuData.wy = (float)wyRaw / 32768.0 * 2000.0;
+      imuData.wz = (float)wzRaw / 32768.0 * 2000.0;
+      
+      imuData.roll = (float)rollRaw / 32768.0 * 180.0;  // ±180°
+      imuData.pitch = (float)pitchRaw / 32768.0 * 180.0;
+      imuData.yaw = (float)yawRaw / 32768.0 * 180.0;
+      
+      imuData.dataValid = true;
+      
+      // Parse optional time data if available (28-byte packet)
+      if (length >= 28) {
+        imuData.timestamp.year = data[20];
+        imuData.timestamp.month = data[21];
+        imuData.timestamp.day = data[22];
+        imuData.timestamp.hour = data[23];
+        imuData.timestamp.minute = data[24];
+        imuData.timestamp.second = data[25];
+        imuData.timestamp.millisecond = (data[27] << 8) | data[26]; // MSH MSL
+        imuData.timestamp.timeValid = true;
+        
+        debugPrintf("BLE Time: %02d/%02d/%02d %02d:%02d:%02d.%03d", 
+                    imuData.timestamp.year, imuData.timestamp.month, imuData.timestamp.day,
+                    imuData.timestamp.hour, imuData.timestamp.minute, imuData.timestamp.second,
+                    imuData.timestamp.millisecond);
+      } else {
+        imuData.timestamp.timeValid = false;
+      }
+      
+      return true;
+    }
+    
+    default:
+      debugPrintf("Unknown packet type: 0x%02X", data[1]);
+      return false;
   }
-  
-  return false;
 }
 
 // Parse IMU packet from UART data  
@@ -678,12 +640,32 @@ bool parseFullIMUPacketUART() {
 
 void printIMUData() {
   debugPrintf("\n[PACKET #%d] ===================================", packetCount);
-  debugPrintf("Acceleration (g):     X: %7.3f  Y: %7.3f  Z: %7.3f", 
-                imuData.ax, imuData.ay, imuData.az);
-  debugPrintf("Angular Vel (°/s):    X: %7.2f  Y: %7.2f  Z: %7.2f", 
-                imuData.wx, imuData.wy, imuData.wz);
-  debugPrintf("Orientation (°):   Roll: %7.2f  Pitch: %7.2f  Yaw: %7.2f", 
-                imuData.roll, imuData.pitch, imuData.yaw);
+  
+  // Show which data is available
+  bool hasAccel = (imuData.ax != 0 || imuData.ay != 0 || imuData.az != 0);
+  bool hasAngVel = (imuData.wx != 0 || imuData.wy != 0 || imuData.wz != 0);
+  bool hasAngles = (imuData.roll != 0 || imuData.pitch != 0 || imuData.yaw != 0);
+  
+  debugPrint("Data Available: ");
+  if (hasAccel) Serial2.print("✓ Acceleration ");
+  if (hasAngVel) Serial2.print("✓ Angular Velocity ");  
+  if (hasAngles) Serial2.print("✓ Orientation ");
+  Serial2.println();
+  
+  if (hasAccel) {
+    debugPrintf("Acceleration (g):     X: %7.3f  Y: %7.3f  Z: %7.3f", 
+                  imuData.ax, imuData.ay, imuData.az);
+  }
+  
+  if (hasAngVel) {
+    debugPrintf("Angular Vel (°/s):    X: %7.2f  Y: %7.2f  Z: %7.2f", 
+                  imuData.wx, imuData.wy, imuData.wz);
+  }
+  
+  if (hasAngles) {
+    debugPrintf("Orientation (°):   Roll: %7.2f  Pitch: %7.2f  Yaw: %7.2f", 
+                  imuData.roll, imuData.pitch, imuData.yaw);
+  }
   
   // Display timestamp if available
   if (imuData.timestamp.timeValid) {
@@ -692,24 +674,27 @@ void printIMUData() {
                 imuData.timestamp.hour, imuData.timestamp.minute, imuData.timestamp.second,
                 imuData.timestamp.millisecond);
   } else {
-    debugPrint("Timestamp:         Not available (20-byte packet)");
+    debugPrint("Timestamp:         Not available");
   }
   
-  // Show Stewart platform relevant info
-  debugPrint("\n[STEWART PLATFORM MOTION]");
-  debugPrintf("Primary Control Axes: Roll: %7.2f°, Pitch: %7.2f°", 
-                imuData.roll, imuData.pitch);
+  // Show Stewart platform relevant info only if we have angle data
+  if (hasAngles) {
+    debugPrint("\n[STEWART PLATFORM MOTION]");
+    debugPrintf("Primary Control Axes: Roll: %7.2f°, Pitch: %7.2f°", 
+                  imuData.roll, imuData.pitch);
+    
+    // Calculate approximate actuator displacements (simplified)
+    float armRadius = 200.0;
+    float dz1 = armRadius * (sin(radians(imuData.pitch)) * cos(radians(0)) + 
+                             sin(radians(imuData.roll)) * sin(radians(0)));
+    float dz2 = armRadius * (sin(radians(imuData.pitch)) * cos(radians(120)) + 
+                             sin(radians(imuData.roll)) * sin(radians(120)));  
+    float dz3 = armRadius * (sin(radians(imuData.pitch)) * cos(radians(240)) + 
+                             sin(radians(imuData.roll)) * sin(radians(240)));
+                             
+    debugPrintf("Est. Actuator Δ (mm): A: %+6.1f  B: %+6.1f  C: %+6.1f", 
+                  dz1, dz2, dz3);
+  }
   
-  // Calculate approximate actuator displacements (simplified)
-  float armRadius = 200.0;
-  float dz1 = armRadius * (sin(radians(imuData.pitch)) * cos(radians(0)) + 
-                           sin(radians(imuData.roll)) * sin(radians(0)));
-  float dz2 = armRadius * (sin(radians(imuData.pitch)) * cos(radians(120)) + 
-                           sin(radians(imuData.roll)) * sin(radians(120)));  
-  float dz3 = armRadius * (sin(radians(imuData.pitch)) * cos(radians(240)) + 
-                           sin(radians(imuData.roll)) * sin(radians(240)));
-                        
-  debugPrintf("Est. Actuator Δ (mm): A: %+6.1f  B: %+6.1f  C: %+6.1f", 
-                dz1, dz2, dz3);
   debugPrint("=====================================================\n");
 } 
