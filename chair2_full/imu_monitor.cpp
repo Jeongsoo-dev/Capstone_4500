@@ -194,7 +194,26 @@ void loop() {
     
     // Show status if no packets received for a while
     if (bleConnected && pRemoteCharacteristic != nullptr && millis() - lastPacketTime > 5000 && packetCount == 0) {
-      debugPrint("No IMU packets received yet. Check IMU configuration and UUIDs.");
+      debugPrint("No IMU packets received yet. Trying direct read...");
+      
+      // Try reading directly from the characteristic
+      if (pRemoteCharacteristic->canRead()) {
+        debugPrint("Attempting direct characteristic read...");
+        std::string value = pRemoteCharacteristic->readValue();
+        if (value.length() > 0) {
+          debugPrintf("Direct read got %d bytes:", value.length());
+          for(int i = 0; i < value.length() && i < 32; i++) {
+            Serial2.printf("0x%02X ", (uint8_t)value[i]);
+            if((i + 1) % 8 == 0) Serial2.println();
+          }
+          Serial2.println();
+        } else {
+          debugPrint("Direct read returned no data");
+        }
+      } else {
+        debugPrint("Characteristic is not readable");
+      }
+      
       lastPacketTime = millis(); // Prevent spam
     }
   } else {
@@ -333,6 +352,19 @@ bool connectToIMU() {
       debugPrint("No CCCD descriptor found, but notification callback registered");
     }
     
+    // Try to start data transmission by sending unlock and start commands
+    delay(100);
+    debugPrint("Sending IMU unlock and start commands...");
+    
+    // Common WT901 commands
+    uint8_t unlockCmd[] = {0xFF, 0xAA, 0x69, 0x88, 0xB5}; // Unlock register
+    uint8_t startCmd[] = {0xFF, 0xAA, 0x02, 0x08, 0x00};   // Start data output
+    
+    pRemoteCharacteristic->writeValue(unlockCmd, 5, false);
+    delay(50);
+    pRemoteCharacteristic->writeValue(startCmd, 5, false);
+    debugPrint("IMU commands sent");
+    
     return true;
   } catch (std::exception& e) {
     debugPrintf("Exception during notification setup: %s", e.what());
@@ -342,7 +374,15 @@ bool connectToIMU() {
 
 // BLE notification callback
 void onNotify(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
-  debugPrintf("Received BLE notification: %d bytes", length);
+  debugPrintf("*** NOTIFICATION RECEIVED: %d bytes", length);
+  
+  // Always print raw data first to see what we're getting
+  debugPrint("Raw notification data:");
+  for(int i = 0; i < length && i < 32; i++) {
+    Serial2.printf("0x%02X ", pData[i]);
+    if((i + 1) % 8 == 0) Serial2.println();
+  }
+  if(length > 0) Serial2.println();
   
   if (parseFullIMUPacket(pData, length)) {
     packetCount++;
@@ -350,14 +390,7 @@ void onNotify(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData,
     debugPrintf("Successfully parsed IMU packet #%d", packetCount);
     printIMUData();
   } else {
-    debugPrint("Failed to parse IMU packet");
-    // Print raw data for debugging
-    debugPrint("Raw packet data:");
-    for(int i = 0; i < length && i < 32; i++) {
-      Serial2.printf("0x%02X ", pData[i]);
-      if((i + 1) % 8 == 0) Serial2.println();
-    }
-    Serial2.println();
+    debugPrint("Data doesn't match expected IMU format (0x55 0x61)");
   }
 }
 
