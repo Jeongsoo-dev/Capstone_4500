@@ -5,4 +5,4 @@
 .vscode/ipch
 
 # Multi-connection IMU Software (proprietary binaries and third-party tools)
-"Multi-connection Software(USB-HID adapter required)/"
+"Multi-connection Software(USB-HID adapter required)"/
