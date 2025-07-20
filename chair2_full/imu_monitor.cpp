@@ -44,13 +44,24 @@ const bool USE_BLUETOOTH_MODE = true;
 // DEBUG MODE - Set to true for additional debugging output
 const bool DEBUG_MODE = true;
 
-// BLE Configuration - REPLACE WITH YOUR IMU'S ACTUAL UUIDs
-static BLEUUID SERVICE_UUID("0000ffe5-0000-1000-8000-00805f9a34fb");    // Update for your device
-static BLEUUID CHAR_UUID("0000ffe9-0000-1000-8000-00805f9a34fb");       // Update for your device
+// BLE Configuration - CORRECTED UUIDs based on protocol analysis
+// TROUBLESHOOTING: If connection fails, try these alternative UUID sets:
+// Option 1 (Your original code):
+static BLEUUID SERVICE_UUID("0000ffe5-0000-1000-8000-00805f9a34fb");
+static BLEUUID NOTIFY_CHAR_UUID("0000ffe9-0000-1000-8000-00805f9a34fb");
+static BLEUUID WRITE_CHAR_UUID("0000ffe4-0000-1000-8000-00805f9a34fb");
+//
+// Option 2 (From README):
+// static BLEUUID SERVICE_UUID("0000ffe5-0000-1000-8000-00805f9b34fb");
+// static BLEUUID NOTIFY_CHAR_UUID("0000ffe9-0000-1000-8000-00805f9b34fb");
+// static BLEUUID WRITE_CHAR_UUID("0000ffe4-0000-1000-8000-00805f9b34fb");
+//
+// The code automatically tries these alternatives during connection
 
 // BLE Variables
 BLEClient* pClient = nullptr;
-BLERemoteCharacteristic* pRemoteCharacteristic = nullptr;
+BLERemoteCharacteristic* pNotifyCharacteristic = nullptr;   // For receiving data
+BLERemoteCharacteristic* pWriteCharacteristic = nullptr;    // For sending commands
 bool bleConnected = false;
 bool bleConnecting = false;
 BLEAdvertisedDevice* targetDevice = nullptr;
@@ -103,14 +114,44 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
       debugPrint("  - No service UUIDs advertised");
     }
     
-    // Check if this device has our service UUID
+    // Check if this device has our service UUID or is a likely IMU device
+    bool isTargetDevice = false;
+    
     if (advertisedDevice.haveServiceUUID() && advertisedDevice.isAdvertisingService(SERVICE_UUID)) {
-      debugPrint("Found target IMU device! Stopping scan...");
+      debugPrint("Found device with exact service UUID match!");
+      isTargetDevice = true;
+    } 
+    // Also check for common IMU device names or alternative service UUIDs
+    else if (advertisedDevice.haveName()) {
+      String deviceName = String(advertisedDevice.getName().c_str());
+      deviceName.toLowerCase();
+      if (deviceName.indexOf("wt901") >= 0 || 
+          deviceName.indexOf("wit") >= 0 || 
+          deviceName.indexOf("imu") >= 0 ||
+          deviceName.indexOf("mpu") >= 0 ||
+          deviceName.indexOf("sensor") >= 0) {
+        debugPrintf("Found potential IMU device by name: %s", deviceName.c_str());
+        isTargetDevice = true;
+      }
+    }
+    // Check alternative service UUIDs
+    else if (advertisedDevice.haveServiceUUID()) {
+      BLEUUID altService1("0000ffe5-0000-1000-8000-00805f9a34fb");
+      BLEUUID altService2("0000ffe5-0000-1000-8000-00805f9b34fb");
+      if (advertisedDevice.isAdvertisingService(altService1) || 
+          advertisedDevice.isAdvertisingService(altService2)) {
+        debugPrint("Found device with alternative service UUID!");
+        isTargetDevice = true;
+      }
+    }
+    
+    if (isTargetDevice) {
+      debugPrint("Target IMU device identified! Stopping scan...");
       deviceFound = true;
       targetDevice = new BLEAdvertisedDevice(advertisedDevice);
       BLEDevice::getScan()->stop();
     } else {
-      debugPrint("  - Does not match our target service UUID");
+      debugPrint("  - Not identified as target IMU device");
     }
     debugPrint("  ---");
   }
@@ -172,13 +213,13 @@ void loop() {
     if (!bleConnected && !bleConnecting) {
       if (millis() - lastScanTime > 10000) { // Wait 10 seconds between scan attempts
         debugPrint("Attempting to connect to IMU...");
-        scanForIMU();
+      scanForIMU();
         lastScanTime = millis();
       }
     }
     
     // Try to establish service connection after BLE connection
-    if (bleConnected && pRemoteCharacteristic == nullptr) {
+    if (bleConnected && pNotifyCharacteristic == nullptr) {
       debugPrint(">>> BLE connected, establishing service connection...");
       if (connectToIMU()) {
         debugPrint(">>> Service connection established successfully");
@@ -193,13 +234,13 @@ void loop() {
     }
     
     // Show status if no packets received for a while
-    if (bleConnected && pRemoteCharacteristic != nullptr && millis() - lastPacketTime > 5000 && packetCount == 0) {
+    if (bleConnected && pNotifyCharacteristic != nullptr && millis() - lastPacketTime > 5000 && packetCount == 0) {
       debugPrint("No IMU packets received yet. Trying direct read...");
       
       // Try reading directly from the characteristic
-      if (pRemoteCharacteristic->canRead()) {
+      if (pNotifyCharacteristic->canRead()) {
         debugPrint("Attempting direct characteristic read...");
-        std::string value = pRemoteCharacteristic->readValue();
+        std::string value = pNotifyCharacteristic->readValue();
         if (value.length() > 0) {
           debugPrintf("Direct read got %d bytes:", value.length());
           for(int i = 0; i < value.length() && i < 32; i++) {
@@ -314,70 +355,136 @@ bool connectToIMU() {
   
   debugPrint("*** Getting IMU service...");
   BLERemoteService* pRemoteService = pClient->getService(SERVICE_UUID);
-  debugPrint("*** getService() call completed");
+  debugPrint("*** Primary service getService() call completed");
+  
+  // If primary service not found, try alternative UUIDs
+  if (pRemoteService == nullptr) {
+    debugPrint("*** Primary service not found, trying alternatives...");
+    BLEUUID altService1("0000ffe5-0000-1000-8000-00805f9a34fb");
+    BLEUUID altService2("0000ffe5-0000-1000-8000-00805f9b34fb");
+    
+    pRemoteService = pClient->getService(altService1);
+    if (pRemoteService == nullptr) {
+      pRemoteService = pClient->getService(altService2);
+    }
+    
+    if (pRemoteService != nullptr) {
+      debugPrint("*** Found service using alternative UUID");
+    }
+  }
   
   if (pRemoteService == nullptr) {
-    debugPrint("*** Failed to find IMU service");
+    debugPrint("*** Failed to find any compatible IMU service");
+    
+    // List all available services for debugging
+    debugPrint("*** Available services on device:");
+    std::map<std::string, BLERemoteService*>* serviceMap = pClient->getServices();
+    for (auto& pair : *serviceMap) {
+      debugPrintf("    Service: %s", pair.first.c_str());
+    }
     return false;
   }
   
-  debugPrint("*** Getting IMU characteristic...");
-  pRemoteCharacteristic = pRemoteService->getCharacteristic(CHAR_UUID);
-  debugPrint("*** getCharacteristic() call completed");
-  if (pRemoteCharacteristic == nullptr) {
-    debugPrint("Failed to find IMU characteristic with UUID: 0000ffe9");
+  debugPrint("*** Getting notify characteristic...");
+  pNotifyCharacteristic = pRemoteService->getCharacteristic(NOTIFY_CHAR_UUID);
+  debugPrint("*** getNotifyCharacteristic() call completed");
+  
+  debugPrint("*** Getting write characteristic...");
+  pWriteCharacteristic = pRemoteService->getCharacteristic(WRITE_CHAR_UUID);
+  debugPrint("*** getWriteCharacteristic() call completed");
+  
+  // If characteristics not found, try alternatives
+  if (pNotifyCharacteristic == nullptr || pWriteCharacteristic == nullptr) {
+    debugPrint("*** Primary characteristics not found, trying alternatives...");
     
-    // Try to get all characteristics and show what's available
-    debugPrint("Available characteristics with properties:");
-    std::map<std::string, BLERemoteCharacteristic*>* charMap = pRemoteService->getCharacteristics();
-    for (auto& pair : *charMap) {
-      BLERemoteCharacteristic* pChar = pair.second;
-      debugPrintf("  - UUID: %s", pair.first.c_str());
-      debugPrintf("    Can Read: %s", pChar->canRead() ? "YES" : "NO");
-      debugPrintf("    Can Write: %s", pChar->canWrite() ? "YES" : "NO");
-      debugPrintf("    Can Notify: %s", pChar->canNotify() ? "YES" : "NO");
-      debugPrintf("    Can Indicate: %s", pChar->canIndicate() ? "YES" : "NO");
+    // Alternative UUIDs for characteristics  
+    BLEUUID altNotify1("0000ffe9-0000-1000-8000-00805f9a34fb");
+    BLEUUID altNotify2("0000ffe9-0000-1000-8000-00805f9b34fb");
+    BLEUUID altWrite1("0000ffe4-0000-1000-8000-00805f9a34fb");
+    BLEUUID altWrite2("0000ffe4-0000-1000-8000-00805f9b34fb");
+    
+    if (pNotifyCharacteristic == nullptr) {
+      pNotifyCharacteristic = pRemoteService->getCharacteristic(altNotify1);
+      if (pNotifyCharacteristic == nullptr) {
+        pNotifyCharacteristic = pRemoteService->getCharacteristic(altNotify2);
+      }
     }
     
-    // Try the most common alternative - 0000ffe1
-    debugPrint("Trying alternative characteristic 0000ffe1...");
-    pRemoteCharacteristic = pRemoteService->getCharacteristic(BLEUUID("0000ffe1-0000-1000-8000-00805f9a34fb"));
-    if (pRemoteCharacteristic == nullptr) {
-      debugPrint("0000ffe1 also not found");
-      return false;
-    } else {
-      debugPrint("Found 0000ffe1 characteristic!");
+    if (pWriteCharacteristic == nullptr) {
+      pWriteCharacteristic = pRemoteService->getCharacteristic(altWrite1);
+      if (pWriteCharacteristic == nullptr) {
+        pWriteCharacteristic = pRemoteService->getCharacteristic(altWrite2);
+      }
+    }
+    
+    // For some IMU devices, the same characteristic handles both read/write
+    if (pNotifyCharacteristic != nullptr && pWriteCharacteristic == nullptr) {
+      debugPrint("*** Using notify characteristic for both read and write");
+      pWriteCharacteristic = pNotifyCharacteristic;
     }
   }
   
-  debugPrint("Found IMU characteristic, setting up notifications...");
+  if (pNotifyCharacteristic == nullptr || pWriteCharacteristic == nullptr) {
+    debugPrintf("Failed to find characteristics - Notify: %s, Write: %s", 
+                pNotifyCharacteristic ? "OK" : "MISSING",
+                pWriteCharacteristic ? "OK" : "MISSING");
+    
+    // Try to get all characteristics and show what's available
+    debugPrint("Available characteristics:");
+    std::map<std::string, BLERemoteCharacteristic*>* charMap = pRemoteService->getCharacteristics();
+    for (auto& pair : *charMap) {
+      BLERemoteCharacteristic* pChar = pair.second;
+      debugPrintf("  - %s (Properties: %s%s%s%s)", 
+                  pair.first.c_str(),
+                  pChar->canRead() ? "R" : "-",
+                  pChar->canWrite() ? "W" : "-",
+                  pChar->canNotify() ? "N" : "-",
+                  pChar->canIndicate() ? "I" : "-");
+    }
+    return false;
+  }
+  
+  debugPrint("Found both characteristics, setting up notifications...");
   
   // Try to register for notifications without checking descriptors first
   try {
-    pRemoteCharacteristic->registerForNotify(onNotify);
+    pNotifyCharacteristic->registerForNotify(onNotify);
     debugPrint("BLE notifications registered successfully");
     
     // Try to subscribe to notifications by writing to CCCD
     uint8_t notificationOn[] = {0x1, 0x0};
-    if (pRemoteCharacteristic->getDescriptor(BLEUUID((uint16_t)0x2902)) != nullptr) {
-      pRemoteCharacteristic->getDescriptor(BLEUUID((uint16_t)0x2902))->writeValue((uint8_t*)notificationOn, 2, true);
+    if (pNotifyCharacteristic->getDescriptor(BLEUUID((uint16_t)0x2902)) != nullptr) {
+      pNotifyCharacteristic->getDescriptor(BLEUUID((uint16_t)0x2902))->writeValue((uint8_t*)notificationOn, 2, true);
       debugPrint("CCCD descriptor written");
     } else {
       debugPrint("No CCCD descriptor found, but notification callback registered");
     }
     
-    // Try to start data transmission by sending unlock and start commands
+    // Try to start data transmission using protocol-compliant commands
     delay(100);
-    debugPrint("Sending IMU unlock and start commands...");
+    debugPrint("Sending IMU initialization commands through WRITE characteristic...");
     
-    // Common WT901 commands
-    uint8_t unlockCmd[] = {0xFF, 0xAA, 0x69, 0x88, 0xB5}; // Unlock register
-    uint8_t startCmd[] = {0xFF, 0xAA, 0x02, 0x08, 0x00};   // Start data output
+    // Protocol-compliant WT901 commands based on documentation
+    uint8_t unlockCmd[] = {0xFF, 0xAA, 0x69, 0x88, 0xB5};   // Unlock register access
+    uint8_t setRate[] = {0xFF, 0xAA, 0x03, 0x0A, 0x00};     // Set output rate (10Hz)
+    uint8_t setBaud[] = {0xFF, 0xAA, 0x04, 0x06, 0x00};     // Set baud rate (115200)
+    uint8_t saveConfig[] = {0xFF, 0xAA, 0x00, 0x00, 0x00};  // Save configuration
+    uint8_t enableOutput[] = {0xFF, 0xAA, 0x02, 0x08, 0x00}; // Enable data output
     
-    pRemoteCharacteristic->writeValue(unlockCmd, 5, false);
-    delay(50);
-    pRemoteCharacteristic->writeValue(startCmd, 5, false);
-    debugPrint("IMU commands sent");
+    // Send commands with delays for processing
+    pWriteCharacteristic->writeValue(unlockCmd, 5, true);
+    delay(100);
+    pWriteCharacteristic->writeValue(setRate, 5, true);
+    delay(100);  
+    pWriteCharacteristic->writeValue(setBaud, 5, true);
+    delay(100);
+    pWriteCharacteristic->writeValue(saveConfig, 5, true);
+    delay(100);
+    pWriteCharacteristic->writeValue(enableOutput, 5, true);
+    delay(100);
+    
+    debugPrint("Protocol-compliant IMU initialization commands sent");
+    debugPrint("Commands: Unlock -> Set Rate (10Hz) -> Set Baud -> Save -> Enable Output");
     
     return true;
   } catch (std::exception& e) {
@@ -601,7 +708,7 @@ void printIMUData() {
                            sin(radians(imuData.roll)) * sin(radians(120)));  
   float dz3 = armRadius * (sin(radians(imuData.pitch)) * cos(radians(240)) + 
                            sin(radians(imuData.roll)) * sin(radians(240)));
-                           
+                        
   debugPrintf("Est. Actuator Δ (mm): A: %+6.1f  B: %+6.1f  C: %+6.1f", 
                 dz1, dz2, dz3);
   debugPrint("=====================================================\n");
