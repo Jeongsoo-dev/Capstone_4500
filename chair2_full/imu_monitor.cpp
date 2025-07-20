@@ -325,15 +325,29 @@ bool connectToIMU() {
   pRemoteCharacteristic = pRemoteService->getCharacteristic(CHAR_UUID);
   debugPrint("*** getCharacteristic() call completed");
   if (pRemoteCharacteristic == nullptr) {
-    debugPrint("Failed to find IMU characteristic");
+    debugPrint("Failed to find IMU characteristic with UUID: 0000ffe9");
     
     // Try to get all characteristics and show what's available
-    debugPrint("Available characteristics:");
+    debugPrint("Available characteristics with properties:");
     std::map<std::string, BLERemoteCharacteristic*>* charMap = pRemoteService->getCharacteristics();
     for (auto& pair : *charMap) {
-      debugPrintf("  - %s", pair.first.c_str());
+      BLERemoteCharacteristic* pChar = pair.second;
+      debugPrintf("  - UUID: %s", pair.first.c_str());
+      debugPrintf("    Can Read: %s", pChar->canRead() ? "YES" : "NO");
+      debugPrintf("    Can Write: %s", pChar->canWrite() ? "YES" : "NO");
+      debugPrintf("    Can Notify: %s", pChar->canNotify() ? "YES" : "NO");
+      debugPrintf("    Can Indicate: %s", pChar->canIndicate() ? "YES" : "NO");
     }
-    return false;
+    
+    // Try the most common alternative - 0000ffe1
+    debugPrint("Trying alternative characteristic 0000ffe1...");
+    pRemoteCharacteristic = pRemoteService->getCharacteristic(BLEUUID("0000ffe1-0000-1000-8000-00805f9a34fb"));
+    if (pRemoteCharacteristic == nullptr) {
+      debugPrint("0000ffe1 also not found");
+      return false;
+    } else {
+      debugPrint("Found 0000ffe1 characteristic!");
+    }
   }
   
   debugPrint("Found IMU characteristic, setting up notifications...");
