@@ -40,11 +40,13 @@ void setup() {
     delay(10); // Wait for serial connection
   }
   
+  Serial.println("\n=== ESP32 Serial Debugger Started ===");
+  Serial.println("Debugger is connected to the computer");
+
   // Initialize UART2 (connection to target ESP32)
   Serial2.begin(BAUD_RATE, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
   
   // Startup message
-  Serial.println("\n=== ESP32 Serial Debugger Started ===");
   Serial.println("Debugger ESP32 → Target ESP32 Bridge Active");
   Serial.printf("USB Serial: %d baud\n", BAUD_RATE);
   Serial.printf("UART2: TX=GPIO%d, RX=GPIO%d, %d baud\n", UART_TX_PIN, UART_RX_PIN, BAUD_RATE);
