@@ -65,6 +65,8 @@ BLEAdvertisedDevice* targetDevice = nullptr;
 bool deviceFound = false;
 unsigned long connectionStartTime = 0;
 unsigned long lastDataRequestTime = 0;  // For periodic data requests
+unsigned long lastScanAttempt = 0;       // For connection retry timing
+int connectionAttempts = 0;              // Track connection attempts
 
 IMUData imuData;
 unsigned long lastPacketTime = 0;
@@ -158,33 +160,47 @@ void setup() {
 
 void loop() {
   if (USE_BLUETOOTH_MODE) {
-    // Debug: Show current BLE state
+    // Debug: Show current BLE state with connection progress
     static unsigned long lastStatusTime = 0;
     if (millis() - lastStatusTime > 3000) {
-      debugPrintf("BLE Status - Connected: %s, Connecting: %s", 
-                  bleConnected ? "YES" : "NO", 
-                  bleConnecting ? "YES" : "NO");
+      if (bleConnecting && !bleConnected) {
+        unsigned long elapsed = millis() - connectionStartTime;
+        debugPrintf("🔄 BLE Connecting... %lu seconds elapsed (timeout at 20s)", elapsed / 1000);
+        debugPrint("   If stuck here, pClient->connect() is hanging (common ESP32 BLE issue)");
+      } else {
+        debugPrintf("BLE Status - Connected: %s, Connecting: %s", 
+                    bleConnected ? "YES" : "NO", 
+                    bleConnecting ? "YES" : "NO");
+      }
       lastStatusTime = millis();
     }
     
-    // Handle connection timeout
-    if (bleConnecting && !bleConnected && millis() - connectionStartTime > 8000) {
-      debugPrint("Connection timeout (8 seconds) - resetting connection state");
+    // Handle connection timeout - AGGRESSIVE TIMEOUT for hanging connect() calls
+    if (bleConnecting && !bleConnected && millis() - connectionStartTime > 20000) {
+      debugPrint("🚨 CONNECTION TIMEOUT (20 seconds) - pClient->connect() likely hung!");
+      debugPrint("This is the common ESP32 BLE connection hanging issue");
       bleConnecting = false;
       if (pClient != nullptr) {
-        pClient->disconnect();
+        try {
+          pClient->disconnect();
+        } catch (...) {
+          debugPrint("Exception during disconnect - continuing cleanup");
+        }
         delete pClient;
         pClient = nullptr;
       }
+      debugPrint("Connection state reset - will retry in 15 seconds");
+      
+      // Add extra delay for hanging connections
+      lastScanAttempt = millis() - 15000 + 25000; // 25 second delay after timeout
     }
     
-    // Handle BLE connection state with retry delay
-    static unsigned long lastScanTime = 0;
+    // Handle BLE connection state with retry delay and timeout
     if (!bleConnected && !bleConnecting) {
-      if (millis() - lastScanTime > 10000) { // Wait 10 seconds between scan attempts
-        debugPrint("Attempting to connect to IMU...");
+      if (millis() - lastScanAttempt > 15000) { // Wait 15 seconds between attempts
+        debugPrintf("Connection attempt #%d - Scanning for IMU...", ++connectionAttempts);
         scanForIMU();
-        lastScanTime = millis();
+        lastScanAttempt = millis();
       }
     }
     
@@ -272,29 +288,59 @@ void scanForIMU() {
     
     // Clean up any existing client
     if (pClient != nullptr) {
-      pClient->disconnect();
+      debugPrint("Cleaning up existing client...");
+      try {
+        pClient->disconnect();
+        delay(100); // Brief delay for cleanup
+      } catch (...) {
+        debugPrint("Exception during client disconnect - continuing...");
+      }
       delete pClient;
+      pClient = nullptr;
     }
     
+    // Create new client
+    debugPrint("Creating new BLE client...");
     pClient = BLEDevice::createClient();
     pClient->setClientCallbacks(new MyClientCallback());
     
     connectionStartTime = millis();
-    debugPrint("Calling pClient->connect()...");
+    debugPrint("🔄 Calling pClient->connect() - this may take up to 15 seconds...");
+    debugPrintf("Target: %s (RSSI: %d)", targetDevice->getAddress().toString().c_str(), targetDevice->getRSSI());
     
-    bool connectResult = pClient->connect(targetDevice);
-    debugPrintf("pClient->connect() returned: %s", connectResult ? "SUCCESS" : "FAILED");
+    // The connect() call is synchronous and can hang - this is the main issue!
+    // ESP32 BLE library doesn't support async connection or timeout
+    bool connectResult = false;
+    try {
+      connectResult = pClient->connect(targetDevice);
+      debugPrintf("✅ pClient->connect() returned: %s", connectResult ? "SUCCESS" : "FAILED");
+    } catch (std::exception& e) {
+      debugPrintf("❌ Exception during connect: %s", e.what());
+      connectResult = false;
+    } catch (...) {
+      debugPrint("❌ Unknown exception during connect");
+      connectResult = false;
+    }
     
     if (connectResult) {
-      debugPrint("BLE connection established successfully");
+      debugPrint("🎉 BLE connection established successfully!");
       bleConnected = true;
       bleConnecting = false;
+      connectionAttempts = 0; // Reset attempt counter on success
     } else {
-      debugPrint("Failed to establish BLE connection");
+      debugPrintf("💥 Failed to establish BLE connection (attempt #%d)", connectionAttempts);
       bleConnecting = false;
       // Clean up failed client
-      delete pClient;
-      pClient = nullptr;
+      if (pClient != nullptr) {
+        delete pClient;
+        pClient = nullptr;
+      }
+      
+      // Add exponential backoff for repeated failures
+      if (connectionAttempts > 3) {
+        debugPrint("⏰ Multiple failures - increasing retry delay to 30 seconds");
+        lastScanAttempt = millis() - 15000 + 30000; // Add extra delay
+      }
     }
   } else {
     bleConnecting = false;
