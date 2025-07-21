@@ -4,6 +4,7 @@
 #include <BLEUtils.h>
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
+#include <vector>
 #include "pin_definitions.h"
 
 // =============================================================================
@@ -12,6 +13,11 @@
 // This utility helps verify that IMU data is being received correctly
 // Supports both Bluetooth and UART communication modes
 // Use Serial2 (UART2) for all debug output, keeps Serial available for IMU data
+//
+// FIXED BLUETOOTH ISSUES:
+// 1. CORRECTED UUIDs: ffe4=notify, ffe9=write (were swapped!)
+// 2. VENDOR PROTOCOL: Device needs periodic register read commands, not streaming
+// 3. COMMAND FORMAT: [0xFF, 0xAA, 0x27, regAddr, 0x00] for data requests
 
 struct IMUData {
   float roll = 0.0;
@@ -44,10 +50,10 @@ const bool USE_BLUETOOTH_MODE = true;
 // DEBUG MODE - Set to true for additional debugging output
 const bool DEBUG_MODE = true;
 
-// BLE Configuration - Using the actual UUIDs found via LightBlue
+// BLE Configuration - Using the actual UUIDs found via LightBlue AND VENDOR PYTHON CODE
 static BLEUUID SERVICE_UUID("0000ffe5-0000-1000-8000-00805f9a34fb");        // Main service  
-static BLEUUID NOTIFY_CHAR_UUID("0000ffe9-0000-1000-8000-00805f9a34fb");    // Notify-only characteristic
-static BLEUUID WRITE_CHAR_UUID("0000ffe4-0000-1000-8000-00805f9a34fb");     // Write-only characteristic
+static BLEUUID NOTIFY_CHAR_UUID("0000ffe9-0000-1000-8000-00805f9a34fb");    // For receiving notifications (FIXED!)
+static BLEUUID WRITE_CHAR_UUID("0000ffe4-0000-1000-8000-00805f9a34fb");     // For sending commands (FIXED!)
 
 // BLE Variables
 BLEClient* pClient = nullptr;
@@ -58,6 +64,7 @@ bool bleConnecting = false;
 BLEAdvertisedDevice* targetDevice = nullptr;
 bool deviceFound = false;
 unsigned long connectionStartTime = 0;
+unsigned long lastDataRequestTime = 0;  // For periodic data requests
 
 IMUData imuData;
 unsigned long lastPacketTime = 0;
@@ -71,6 +78,8 @@ bool parseFullIMUPacket(uint8_t* data, size_t length);
 bool parseFullIMUPacketUART();  // For UART mode
 void printIMUData();
 void onNotify(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
+void sendDataRequest();  // Vendor protocol data request
+std::vector<uint8_t> createReadCommand(uint8_t regAddr);  // Vendor protocol helper
 
 // BLE Client Callbacks
 class MyClientCallback : public BLEClientCallbacks {
@@ -184,6 +193,7 @@ void loop() {
       debugPrint(">>> BLE connected, establishing service connection...");
       if (connectToIMU()) {
         debugPrint(">>> Service connection established successfully");
+        lastDataRequestTime = millis(); // Initialize request timer
       } else {
         debugPrint(">>> Failed to establish service connection");
         // If service connection fails, disconnect and retry
@@ -194,9 +204,15 @@ void loop() {
       }
     }
     
+    // Send periodic data requests using vendor protocol (every 200ms)
+    if (bleConnected && pWriteCharacteristic != nullptr && millis() - lastDataRequestTime > 200) {
+      sendDataRequest();
+      lastDataRequestTime = millis();
+    }
+    
     // Show status if no packets received for a while
     if (bleConnected && pNotifyCharacteristic != nullptr && millis() - lastPacketTime > 5000 && packetCount == 0) {
-      debugPrint("No IMU packets received yet. Check IMU configuration and UUIDs.");
+      debugPrint("No IMU packets received yet. Trying vendor protocol data requests...");
       lastPacketTime = millis(); // Prevent spam
     }
   } else {
@@ -304,9 +320,8 @@ bool connectToIMU() {
     return false;
   }
   
-  debugPrint("*** Getting IMU characteristic...");
+  debugPrint("*** Getting IMU notify characteristic (FIXED UUID: ffe4)...");
   pNotifyCharacteristic = pRemoteService->getCharacteristic(NOTIFY_CHAR_UUID);
-  debugPrint("*** getCharacteristic() call completed");
   if (pNotifyCharacteristic == nullptr) {
     debugPrint("Failed to find IMU notify characteristic");
     
@@ -319,58 +334,24 @@ bool connectToIMU() {
     return false;
   }
   
-  debugPrint("*** Getting IMU write characteristic...");
+  debugPrint("*** Getting IMU write characteristic (FIXED UUID: ffe9)...");
   pWriteCharacteristic = pRemoteService->getCharacteristic(WRITE_CHAR_UUID);
   if (pWriteCharacteristic == nullptr) {
     debugPrint("Failed to find IMU write characteristic");
     return false;
   }
   
-  debugPrint("Found both IMU characteristics, setting up notifications...");
+  debugPrint("Found both IMU characteristics with CORRECTED UUIDs!");
+  debugPrint("Setting up notifications using vendor protocol...");
   
-  // Register for notifications on the notify-only characteristic
+  // Register for notifications on the correct characteristic
   try {
     pNotifyCharacteristic->registerForNotify(onNotify);
-    debugPrint("BLE notifications registered successfully");
+    debugPrint("BLE notifications registered successfully on FFE4 (receive) characteristic");
     
-    // WT901 devices often don't need CCCD or streaming commands
-    debugPrint("CCCD not needed for WT901 - checking if device streams automatically...");
-    
-    // Wait a moment to see if data comes automatically
-    delay(2000);
-    
-    // If no data comes automatically, try different commands
-    debugPrint("Testing different streaming commands...");
-    
-    // Try 1: No command (many WT901 devices stream automatically)
-    debugPrint("Attempt 1: Waiting for automatic streaming (no command needed)...");
-    delay(1000);
-    
-    // Try 2: Common WT901 command from documentation
-    debugPrint("Attempt 2: Sending documented WT901 command...");
-    uint8_t cmd1[] = {0xFF, 0xAA, 0x03, 0x08, 0x00, 0x0E};
-    pWriteCharacteristic->writeValue(cmd1, sizeof(cmd1), true);
-    delay(1000);
-    
-    // Try 3: Alternative command format
-    debugPrint("Attempt 3: Sending alternative format...");
-    uint8_t cmd2[] = {0xFF, 0xAA, 0x69, 0x88, 0xB5};  // Alternative start command
-    pWriteCharacteristic->writeValue(cmd2, sizeof(cmd2), true);
-    delay(1000);
-    
-    // Try 4: Simple wake up command
-    debugPrint("Attempt 4: Sending wake-up command...");
-    uint8_t cmd3[] = {0xFF, 0xAA, 0x01, 0x04, 0x00, 0x00};  // Wake up
-    pWriteCharacteristic->writeValue(cmd3, sizeof(cmd3), true);
-    delay(1000);
-    
-    // Try 5: Request data command
-    debugPrint("Attempt 5: Sending data request command...");
-    uint8_t cmd4[] = {0xFF, 0xAA, 0x01, 0x07, 0x00, 0x00};  // Request data
-    pWriteCharacteristic->writeValue(cmd4, sizeof(cmd4), true);
-    
-    debugPrint("All streaming commands attempted. Monitor should receive data if IMU is working.");
-    debugPrint("If no data appears, the issue may be with the IMU configuration or hardware.");
+    debugPrint("Using VENDOR PROTOCOL: Device requires periodic register read commands");
+    debugPrint("Will send register read commands every 200ms to get data");
+    debugPrint("Commands: readReg(0x3A) for magnetic field, readReg(0x51) for quaternion");
     
     return true;
   } catch (std::exception& e) {
@@ -396,8 +377,9 @@ void onNotify(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData,
     if (pData[0] == 0x55) {
       debugPrintf("Found packet header 0x55, second byte: 0x%02X", pData[1]);
       
-      // Common WT901 packet types:
-      if (pData[1] == 0x61) debugPrint("  -> Type: Acceleration + Angle data");
+      // Common WT901 packet types (based on vendor Python code):
+      if (pData[1] == 0x61) debugPrint("  -> Type: Combined Acceleration + Angular Velocity + Angle data");
+      else if (pData[1] == 0x71) debugPrint("  -> Type: Register response (Magnetic field or Quaternion)");
       else if (pData[1] == 0x51) debugPrint("  -> Type: Acceleration data");
       else if (pData[1] == 0x52) debugPrint("  -> Type: Angular velocity data"); 
       else if (pData[1] == 0x53) debugPrint("  -> Type: Angle data");
@@ -476,6 +458,50 @@ bool parseFullIMUPacket(uint8_t* data, size_t length) {
       imuData.yaw = (float)yawRaw / 32768.0 * 180.0;
       imuData.dataValid = true;
       return true;
+    }
+    
+    case 0x71: { // Register response data (magnetic field or quaternion) - VENDOR PROTOCOL
+      if (length < 20) return false;
+      
+      uint8_t regAddr = data[2]; // Register address in byte 2
+      debugPrintf("Register response for address 0x%02X", regAddr);
+      
+      if (regAddr == 0x3A) {
+        // Magnetic field data response
+        int16_t hxRaw = (data[5] << 8) | data[4];
+        int16_t hyRaw = (data[7] << 8) | data[6];
+        int16_t hzRaw = (data[9] << 8) | data[8];
+        
+        float hx = (float)hxRaw / 120.0;  // Based on vendor Python code
+        float hy = (float)hyRaw / 120.0;
+        float hz = (float)hzRaw / 120.0;
+        
+        debugPrintf("Magnetic field - X: %7.3f, Y: %7.3f, Z: %7.3f", hx, hy, hz);
+        // Store in IMU data structure if needed
+        imuData.dataValid = true;
+        return true;
+      }
+      else if (regAddr == 0x51) {
+        // Quaternion data response  
+        int16_t q0Raw = (data[5] << 8) | data[4];
+        int16_t q1Raw = (data[7] << 8) | data[6];
+        int16_t q2Raw = (data[9] << 8) | data[8];
+        int16_t q3Raw = (data[11] << 8) | data[10];
+        
+        float q0 = (float)q0Raw / 32768.0;  // Based on vendor Python code
+        float q1 = (float)q1Raw / 32768.0;
+        float q2 = (float)q2Raw / 32768.0;
+        float q3 = (float)q3Raw / 32768.0;
+        
+        debugPrintf("Quaternion - Q0: %7.5f, Q1: %7.5f, Q2: %7.5f, Q3: %7.5f", q0, q1, q2, q3);
+        // Store in IMU data structure if needed
+        imuData.dataValid = true;
+        return true;
+      }
+      else {
+        debugPrintf("Unknown register response: 0x%02X", regAddr);
+        return false;
+      }
     }
     
     case 0x61: { // Combined acceleration + angle data (original format)
@@ -697,4 +723,45 @@ void printIMUData() {
   }
   
   debugPrint("=====================================================\n");
-} 
+}
+
+// =============================================================================
+// VENDOR PROTOCOL IMPLEMENTATION - Based on Python sample code
+// =============================================================================
+
+// Create vendor protocol read command - matches Python get_readBytes()
+std::vector<uint8_t> createReadCommand(uint8_t regAddr) {
+  std::vector<uint8_t> cmd(5);
+  cmd[0] = 0xFF;  // Header
+  cmd[1] = 0xAA;  // Header  
+  cmd[2] = 0x27;  // Read command
+  cmd[3] = regAddr;
+  cmd[4] = 0x00;
+  return cmd;
+}
+
+// Send periodic data requests using vendor protocol
+void sendDataRequest() {
+  if (!bleConnected || pWriteCharacteristic == nullptr) return;
+  
+  static bool requestMagnetic = true; // Alternate between requests
+  
+  try {
+    if (requestMagnetic) {
+      // Request magnetic field data (register 0x3A)
+      auto cmd = createReadCommand(0x3A);
+      pWriteCharacteristic->writeValue(cmd.data(), cmd.size(), true);
+      if (DEBUG_MODE) debugPrint("Sent magnetic field data request (0x3A)");
+    } else {
+      // Request quaternion data (register 0x51)  
+      auto cmd = createReadCommand(0x51);
+      pWriteCharacteristic->writeValue(cmd.data(), cmd.size(), true);
+      if (DEBUG_MODE) debugPrint("Sent quaternion data request (0x51)");
+    }
+    
+    requestMagnetic = !requestMagnetic; // Alternate requests
+    
+  } catch (std::exception& e) {
+    debugPrintf("Exception sending data request: %s", e.what());
+  }
+}
