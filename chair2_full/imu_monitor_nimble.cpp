@@ -88,6 +88,7 @@ std::vector<uint8_t> createReadCommand(uint8_t regAddr);  // Vendor protocol hel
 class MyClientCallback : public NimBLEClientCallbacks {
   void onConnect(NimBLEClient* pclient) {
     debugPrint("🎉 NIMBLE CLIENT: Connected to IMU device!");
+    debugPrint("🔍 BLE connection established - now setting up services...");
     bleConnected = true;
     bleConnecting = false;
     
@@ -95,6 +96,7 @@ class MyClientCallback : public NimBLEClientCallbacks {
     connectionAttempts = 0;
     
     debugPrint("✅ Connection hanging issue SOLVED with nimBLE!");
+    debugPrint("📋 Next step: Service discovery and notification setup");
   }
 
   void onDisconnect(NimBLEClient* pclient, int reason) {
@@ -196,6 +198,21 @@ void loop() {
                   bleConnected ? "YES" : "NO", 
                   bleConnecting ? "YES" : "NO",
                   connectionAttempts);
+                  
+      // Show detailed status
+      if (bleConnected) {
+        debugPrintf("   🔗 Service connection: %s, Notifications: %s", 
+                    (pNotifyCharacteristic != nullptr) ? "YES" : "NO",
+                    notificationSystemActive ? "ACTIVE" : "INACTIVE");
+                    
+        if (notificationSystemActive) {
+          debugPrintf("   📈 Received %d notifications, last: %lu ms ago", 
+                      notificationCount, 
+                      millis() - lastNotificationTime);
+        } else {
+          debugPrint("   ⚠️ No notifications received yet!");
+        }
+      }
       lastStatusTime = millis();
     }
     
@@ -239,15 +256,45 @@ void loop() {
       }
     }
     
-    // Send periodic data requests using vendor protocol (every 200ms)
+    // Send periodic data requests using vendor protocol (every 200ms)  
     if (bleConnected && pWriteCharacteristic != nullptr && millis() - lastDataRequestTime > 200) {
       sendDataRequest();
       lastDataRequestTime = millis();
+      
+      // If notifications aren't working, try direct reading as backup
+      static unsigned long lastDirectReadTime = 0;
+      if (!notificationSystemActive && pNotifyCharacteristic != nullptr && 
+          millis() - lastDirectReadTime > 1000) {
+        debugPrint("🔧 Notifications not working - trying direct read...");
+        
+        try {
+          std::string data = pNotifyCharacteristic->readValue();
+          if (!data.empty()) {
+            debugPrintf("📡 Direct read got %d bytes", data.length());
+            // Process the data as if it came from notification
+            onNotify(pNotifyCharacteristic, (uint8_t*)data.data(), data.length(), false);
+          } else {
+            debugPrint("📭 Direct read returned empty data");
+          }
+        } catch (std::exception& e) {
+          debugPrintf("❌ Exception during direct read: %s", e.what());
+        }
+        
+        lastDirectReadTime = millis();
+      }
     }
     
-    // Show status if no packets received for a while
+    // Show status if no packets received for a while and test notification system
+    static unsigned long lastNotificationTest = 0;
     if (bleConnected && pNotifyCharacteristic != nullptr && millis() - lastPacketTime > 5000 && packetCount == 0) {
       debugPrint("📡 No IMU packets received yet. Trying vendor protocol data requests...");
+      
+      // Test notification system if we haven't done so recently
+      if (millis() - lastNotificationTest > 10000) {
+        testNotificationSystem();
+        lastNotificationTest = millis();
+      }
+      
       lastPacketTime = millis(); // Prevent spam
     }
   } else {
@@ -409,6 +456,14 @@ bool connectToIMU() {
     return false;
   }
   
+  // Check characteristic properties
+  debugPrint("✅ Found notify characteristic!");
+  if (pNotifyCharacteristic->canNotify()) {
+    debugPrint("   ✓ Characteristic supports notifications");
+  } else {
+    debugPrint("   ⚠️ Characteristic does NOT support notifications!");
+  }
+  
   debugPrint("🔍 Getting IMU write characteristic (FIXED UUID: ffe9)...");
   pWriteCharacteristic = pRemoteService->getCharacteristic(WRITE_CHAR_UUID);
   if (pWriteCharacteristic == nullptr) {
@@ -416,21 +471,64 @@ bool connectToIMU() {
     return false;
   }
   
+  debugPrint("✅ Found write characteristic!");
+  if (pWriteCharacteristic->canWrite()) {
+    debugPrint("   ✓ Characteristic supports writing");
+  } else {
+    debugPrint("   ⚠️ Characteristic does NOT support writing!");
+  }
+  
   debugPrint("✅ Found both IMU characteristics with CORRECTED UUIDs!");
   debugPrint("📡 Setting up notifications using vendor protocol...");
   
   // Subscribe to notifications using nimBLE method
   try {
-    if (pNotifyCharacteristic->subscribe(true, onNotify)) {
+    debugPrint("🔧 Attempting to subscribe to notifications...");
+    
+    // Test callback registration first
+    debugPrint("🧪 Testing notification callback registration...");
+    bool subscribeResult = pNotifyCharacteristic->subscribe(true, onNotify);
+    
+    if (subscribeResult) {
       debugPrint("✅ nimBLE notifications registered successfully on FFE4 (receive) characteristic");
+      debugPrint("🔔 Notification callback is now active - waiting for data...");
+      
+      // Verify subscription worked by checking if notifications are enabled
+      if (pNotifyCharacteristic->getDescriptor(NimBLEUUID("2902")) != nullptr) {
+        debugPrint("✅ Client Characteristic Configuration Descriptor (CCCD) found");
+        // Read CCCD value to verify subscription
+        auto* cccdDesc = pNotifyCharacteristic->getDescriptor(NimBLEUUID("2902"));
+        std::string cccdValue = cccdDesc->readValue();
+        if (cccdValue.length() >= 2) {
+          uint16_t cccd = (uint8_t)cccdValue[1] << 8 | (uint8_t)cccdValue[0];
+          debugPrintf("📋 CCCD value: 0x%04X (0x0001=notifications, 0x0002=indications)", cccd);
+          if (cccd & 0x0001) {
+            debugPrint("✅ Notifications are ENABLED in CCCD");
+          } else {
+            debugPrint("❌ Notifications are NOT enabled in CCCD");
+          }
+        }
+      } else {
+        debugPrint("⚠️ No CCCD found - notifications may not work properly");
+      }
       
       debugPrint("🔧 Using VENDOR PROTOCOL: Device requires periodic register read commands");
       debugPrint("Will send register read commands every 200ms to get data");
       debugPrint("Commands: readReg(0x3A) for magnetic field, readReg(0x51) for quaternion");
       
+      // Send a test command immediately to verify write capability
+      debugPrint("🧪 Sending test command to verify communication...");
+      auto testCmd = createReadCommand(0x3A);
+      bool writeResult = pWriteCharacteristic->writeValue(testCmd.data(), testCmd.size(), true);
+      debugPrintf("📤 Test command sent: %s", writeResult ? "SUCCESS" : "FAILED");
+      
       return true;
     } else {
       debugPrint("❌ Failed to subscribe to notifications");
+      debugPrint("   This could be due to:");
+      debugPrint("   - Characteristic doesn't support notifications");  
+      debugPrint("   - CCCD write failed");
+      debugPrint("   - BLE stack issue");
       return false;
     }
   } catch (std::exception& e) {
@@ -439,9 +537,18 @@ bool connectToIMU() {
   }
 }
 
+// Add status tracking variables  
+static bool notificationSystemActive = false;
+static unsigned long lastNotificationTime = 0;
+static int notificationCount = 0;
+
 // nimBLE notification callback
 void onNotify(NimBLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
-  debugPrintf("🔔 NIMBLE NOTIFICATION RECEIVED! %d bytes", length);
+  notificationSystemActive = true;
+  lastNotificationTime = millis();
+  notificationCount++;
+  
+  debugPrintf("🔔 NIMBLE NOTIFICATION RECEIVED! #%d, %d bytes", notificationCount, length);
   
   // Always show raw packet data for analysis
   debugPrint("Raw packet data:");
@@ -821,23 +928,65 @@ void sendDataRequest() {
   if (!bleConnected || pWriteCharacteristic == nullptr) return;
   
   static bool requestMagnetic = true; // Alternate between requests
+  static int writeFailureCount = 0;
   
   try {
+    std::vector<uint8_t> cmd;
+    const char* reqType;
+    
     if (requestMagnetic) {
       // Request magnetic field data (register 0x3A)
-      auto cmd = createReadCommand(0x3A);
-      pWriteCharacteristic->writeValue(cmd.data(), cmd.size(), true);
-      if (DEBUG_MODE) debugPrint("Sent magnetic field data request (0x3A)");
+      cmd = createReadCommand(0x3A);
+      reqType = "magnetic field (0x3A)";
     } else {
       // Request quaternion data (register 0x51)  
-      auto cmd = createReadCommand(0x51);
-      pWriteCharacteristic->writeValue(cmd.data(), cmd.size(), true);
-      if (DEBUG_MODE) debugPrint("Sent quaternion data request (0x51)");
+      cmd = createReadCommand(0x51);
+      reqType = "quaternion (0x51)";
+    }
+    
+    bool writeResult = pWriteCharacteristic->writeValue(cmd.data(), cmd.size(), true);
+    
+    if (writeResult) {
+      if (DEBUG_MODE) debugPrintf("📤 Sent %s data request", reqType);
+      writeFailureCount = 0; // Reset failure count on success
+    } else {
+      writeFailureCount++;
+      debugPrintf("❌ Failed to send %s data request (failure #%d)", reqType, writeFailureCount);
+      
+      if (writeFailureCount >= 5) {
+        debugPrint("⚠️ Multiple write failures - checking connection...");
+        // Could trigger a connection reset here if needed
+      }
     }
     
     requestMagnetic = !requestMagnetic; // Alternate requests
     
   } catch (std::exception& e) {
-    debugPrintf("Exception sending data request: %s", e.what());
+    debugPrintf("❌ Exception sending data request: %s", e.what());
+  }
+}
+
+// Test notification system manually
+void testNotificationSystem() {
+  if (!bleConnected || pNotifyCharacteristic == nullptr) return;
+  
+  debugPrint("🧪 Testing notification system manually...");
+  
+  // Try re-subscribing to notifications
+  try {
+    bool resubResult = pNotifyCharacteristic->subscribe(true, onNotify);
+    debugPrintf("   Re-subscribe result: %s", resubResult ? "SUCCESS" : "FAILED");
+    
+    if (resubResult) {
+      // Send a command that should trigger a response
+      if (pWriteCharacteristic != nullptr) {
+        auto testCmd = createReadCommand(0x3A);
+        bool writeResult = pWriteCharacteristic->writeValue(testCmd.data(), testCmd.size(), true);
+        debugPrintf("   Test command sent: %s", writeResult ? "SUCCESS" : "FAILED");
+        debugPrint("   Waiting 2 seconds for notification response...");
+      }
+    }
+  } catch (std::exception& e) {
+    debugPrintf("   Exception: %s", e.what());
   }
 } 
