@@ -59,11 +59,13 @@ NimBLERemoteCharacteristic* pWriteCharacteristic = nullptr;   // For sending com
 bool bleConnected = false;
 bool bleConnecting = false;
 NimBLEAdvertisedDevice* targetDevice = nullptr;
+NimBLEAddress targetDeviceAddress;        // Store device address instead of pointer
 bool deviceFound = false;
 unsigned long connectionStartTime = 0;
 unsigned long lastDataRequestTime = 0;  // For periodic data requests
 unsigned long lastScanAttempt = 0;       // For connection retry timing
 int connectionAttempts = 0;              // Track connection attempts
+const unsigned long CONNECTION_TIMEOUT = 30000; // 30 second timeout
 
 IMUData imuData;
 unsigned long lastPacketTime = 0;
@@ -109,9 +111,20 @@ class MyClientCallback : public NimBLEClientCallbacks {
   
   void onConnectFail(NimBLEClient* pclient, int reason) {
     debugPrintf("❌ NIMBLE CLIENT: Connection failed (reason: %d)", reason);
+    
+    // Decode common NimBLE error codes
+    switch(reason) {
+      case 0x08: debugPrint("   Error: Connection timeout"); break;
+      case 0x3e: debugPrint("   Error: Connection failed to establish"); break;
+      case 0x3c: debugPrint("   Error: Connection interval unacceptable"); break;
+      case 0x02: debugPrint("   Error: Unknown connection identifier"); break;
+      case 0x16: debugPrint("   Error: Connection terminated by local host"); break;
+      default: debugPrintf("   Error: Unknown error code (0x%02X)", reason); break;
+    }
+    
     bleConnected = false;
     bleConnecting = false;
-    debugPrint("Will retry connection...");
+    debugPrint("Will retry connection after delay...");
   }
 };
 
@@ -138,6 +151,8 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
       debugPrint("🎯 Found target IMU device! Stopping scan...");
       deviceFound = true;
       targetDevice = advertisedDevice;
+      targetDeviceAddress = advertisedDevice->getAddress(); // Store address for connection
+      debugPrintf("Stored target address: %s", targetDeviceAddress.toString().c_str());
       NimBLEDevice::getScan()->stop();
     } else {
       debugPrint("  - Does not match our target service UUID");
@@ -182,6 +197,22 @@ void loop() {
                   bleConnecting ? "YES" : "NO",
                   connectionAttempts);
       lastStatusTime = millis();
+    }
+    
+    // Handle connection timeout
+    if (bleConnecting && (millis() - connectionStartTime > CONNECTION_TIMEOUT)) {
+      debugPrint("⏰ Connection timeout! Resetting connection state...");
+      bleConnecting = false;
+      
+      // Clean up client
+      if (pClient != nullptr) {
+        pClient->disconnect();
+        NimBLEDevice::deleteClient(pClient);
+        pClient = nullptr;
+      }
+      
+      debugPrint("Will retry connection after delay...");
+      lastScanAttempt = millis(); // Set retry timer
     }
     
     // Handle nimBLE connection state with retry delay  
@@ -254,6 +285,7 @@ void scanForIMU() {
   // Reset flags
   deviceFound = false;
   targetDevice = nullptr;
+  targetDeviceAddress = NimBLEAddress(""); // Reset address
   
   bleConnecting = true;
   debugPrint("🔍 Scanning for IMU device...");
@@ -272,9 +304,22 @@ void scanForIMU() {
   // Scan completed
   debugPrintf("✅ Scan completed. Found %d devices total", foundDevices.getCount());
   
+  // Show scan statistics for troubleshooting
+  if (foundDevices.getCount() == 0) {
+    debugPrint("⚠️  No BLE devices found at all!");
+    debugPrint("   Check if:");
+    debugPrint("   - BLE is enabled on the device");
+    debugPrint("   - Device is in pairing/advertising mode");
+    debugPrint("   - Device is within range (try moving closer)");
+    debugPrint("   - No interference from other devices");
+  } else {
+    debugPrintf("📊 Scan statistics: Found %d BLE devices in 10 seconds", foundDevices.getCount());
+  }
+  
   // Check if we found our target device
-  if (deviceFound && targetDevice != nullptr) {
+  if (deviceFound && !targetDeviceAddress.toString().empty()) {
     debugPrint("🎯 Target device found, attempting nimBLE connection...");
+    debugPrintf("Target address: %s", targetDeviceAddress.toString().c_str());
     
     // Clean up any existing client - nimBLE way
     if (pClient != nullptr) {
@@ -286,24 +331,41 @@ void scanForIMU() {
     // Create new nimBLE client
     debugPrint("🔨 Creating new nimBLE client...");
     pClient = NimBLEDevice::createClient();
+    
+    if (pClient == nullptr) {
+      debugPrint("❌ Failed to create nimBLE client!");
+      bleConnecting = false;
+      return;
+    }
+    
     pClient->setClientCallbacks(new MyClientCallback());
     
-    // ASYNC CONNECTION - This is the key fix for hanging!
-    debugPrint("🚀 Attempting ASYNC connection (no more hanging!)");
-    debugPrintf("Target: %s (RSSI: %d dBm)", targetDevice->getAddress().toString().c_str(), targetDevice->getRSSI());
+    // Set connection parameters for better reliability
+    pClient->setConnectionParams(12, 12, 0, 51);  // Faster connection parameters
+    pClient->setConnectTimeout(15);               // 15 second timeout
     
+    debugPrint("🔧 Client configured with optimized connection parameters");
+    
+    // ASYNC CONNECTION using stored address
+    debugPrint("🚀 Attempting ASYNC connection using stored address...");
     connectionStartTime = millis();
     
-    // Connect to device using nimBLE
-    bool connectResult = pClient->connect(targetDevice);  // nimBLE async by default
+    // Connect using address instead of device pointer
+    bool connectResult = pClient->connect(targetDeviceAddress);
     
     if (connectResult) {
       debugPrint("✅ Async connection command sent successfully!");
       debugPrint("   Connection will complete asynchronously via callbacks");
+      debugPrint("   Waiting for onConnect() callback...");
       // bleConnecting remains true, will be set false in callbacks
     } else {
       debugPrint("❌ Failed to send async connection command");
+      debugPrint("   This could be due to:");
+      debugPrint("   - Device moved out of range");
+      debugPrint("   - Device stopped advertising");
+      debugPrint("   - BLE stack issue");
       bleConnecting = false;
+      
       // Clean up
       if (pClient != nullptr) {
         NimBLEDevice::deleteClient(pClient);
