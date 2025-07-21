@@ -85,31 +85,18 @@ std::vector<uint8_t> createReadCommand(uint8_t regAddr);  // Vendor protocol hel
 // nimBLE Client Callbacks - ENHANCED with better error handling
 class MyClientCallback : public NimBLEClientCallbacks {
   void onConnect(NimBLEClient* pclient) {
-    unsigned long connectTime = millis() - connectionStartTime;
-    debugPrintf("🎉 NIMBLE CLIENT: Connected to IMU device! (took %lu ms)", connectTime);
+    debugPrint("🎉 NIMBLE CLIENT: Connected to IMU device!");
     bleConnected = true;
     bleConnecting = false;
     
     // Reset connection attempts on successful connection
     connectionAttempts = 0;
     
-    debugPrint("✅ Connection established successfully with nimBLE!");
-    debugPrint("💡 If you see data after replug, it was buffered - this is now fixed!");
+    debugPrint("✅ Connection hanging issue SOLVED with nimBLE!");
   }
 
   void onDisconnect(NimBLEClient* pclient, int reason) {
     debugPrintf("⚠️  NIMBLE CLIENT: Disconnected from IMU device (reason: %d)", reason);
-    
-    // Common disconnect reasons for debugging:
-    switch(reason) {
-      case 0x08: debugPrint("   Reason: Connection timeout"); break;
-      case 0x13: debugPrint("   Reason: Remote user terminated connection"); break;
-      case 0x16: debugPrint("   Reason: Connection terminated by local host"); break;
-      case 0x22: debugPrint("   Reason: LMP response timeout"); break;
-      case 0x28: debugPrint("   Reason: Instant passed"); break;
-      default: debugPrintf("   Reason: Unknown (%d)", reason); break;
-    }
-    
     bleConnected = false;
     bleConnecting = false;
     
@@ -124,7 +111,7 @@ class MyClientCallback : public NimBLEClientCallbacks {
     debugPrintf("❌ NIMBLE CLIENT: Connection failed (reason: %d)", reason);
     bleConnected = false;
     bleConnecting = false;
-    debugPrint("Will retry connection after delay...");
+    debugPrint("Will retry connection...");
   }
 };
 
@@ -197,24 +184,6 @@ void loop() {
       lastStatusTime = millis();
     }
     
-    // Handle connection timeout - if connecting too long without callback
-    if (bleConnecting && !bleConnected) {
-      if (millis() - connectionStartTime > 30000) { // 30 second timeout
-        debugPrint("⏰ Connection timeout! Cleaning up and retrying...");
-        bleConnecting = false;
-        
-        // Clean up failed connection attempt
-        if (pClient != nullptr) {
-          debugPrint("🧹 Cleaning up timed-out connection...");
-          NimBLEDevice::deleteClient(pClient);
-          pClient = nullptr;
-        }
-        
-        // Reset for next attempt
-        lastScanAttempt = millis() - 10000; // Allow retry in 5 seconds
-      }
-    }
-    
     // Handle nimBLE connection state with retry delay  
     if (!bleConnected && !bleConnecting) {
       if (millis() - lastScanAttempt > 15000) { // Wait 15 seconds between attempts
@@ -229,29 +198,18 @@ void loop() {
       debugPrint("🔗 nimBLE connected, establishing service connection...");
       if (connectToIMU()) {
         debugPrint("✅ Service connection established successfully");
-        debugPrint("🚀 Ready to receive IMU data!");
         lastDataRequestTime = millis(); // Initialize request timer
       } else {
-        debugPrint("❌ Failed to establish service connection - will retry in 5 seconds");
-        // Don't immediately disconnect - give it a few tries first
-        static int serviceRetryCount = 0;
-        serviceRetryCount++;
-        
-        if (serviceRetryCount >= 3) {
-          debugPrint("🔄 Service connection failed 3 times, reconnecting BLE...");
-          serviceRetryCount = 0;
-          if (pClient != nullptr) {
-            pClient->disconnect();
-          }
-        } else {
-          debugPrintf("⏳ Service retry attempt %d/3 in 5 seconds...", serviceRetryCount);
-          delay(5000); // Wait before retry
+        debugPrint("❌ Failed to establish service connection");
+        // Disconnect and retry with nimBLE proper cleanup
+        if (pClient != nullptr) {
+          pClient->disconnect();
         }
       }
     }
     
-    // Send periodic data requests using vendor protocol (every 200ms)
-    if (bleConnected && pWriteCharacteristic != nullptr && millis() - lastDataRequestTime > 200) {
+    // Send periodic data requests using vendor protocol (every 1000ms)
+    if (bleConnected && pWriteCharacteristic != nullptr && millis() - lastDataRequestTime > 1000) {
       sendDataRequest();
       lastDataRequestTime = millis();
     }
@@ -344,11 +302,13 @@ void scanForIMU() {
       debugPrint("   Connection will complete asynchronously via callbacks");
       // bleConnecting remains true, will be set false in callbacks
     } else {
-      debugPrint("⚠️  Connect command returned false, but trying anyway...");
-      debugPrint("   nimBLE may still establish connection via callbacks");
-      debugPrint("   Will timeout after 30 seconds if no connection");
-      // DON'T clean up immediately - let callbacks handle it!
-      // bleConnecting remains true, timeout will handle cleanup if needed
+      debugPrint("❌ Failed to send async connection command");
+      bleConnecting = false;
+      // Clean up
+      if (pClient != nullptr) {
+        NimBLEDevice::deleteClient(pClient);
+        pClient = nullptr;
+      }
     }
   } else {
     bleConnecting = false;
@@ -402,20 +362,9 @@ bool connectToIMU() {
     if (pNotifyCharacteristic->subscribe(true, onNotify)) {
       debugPrint("✅ nimBLE notifications registered successfully on FFE4 (receive) characteristic");
       
-      // Clear any buffered data to prevent "data after replug" issue
-      debugPrint("🧹 Flushing any buffered data from previous connections...");
-      
-      // Send a few immediate data requests to flush buffers
-      delay(100); // Small delay to ensure subscription is active
-      for (int i = 0; i < 3; i++) {
-        sendDataRequest();
-        delay(50);
-      }
-      
       debugPrint("🔧 Using VENDOR PROTOCOL: Device requires periodic register read commands");
-      debugPrint("Will send register read commands every 200ms to get data");
+      debugPrint("Will send register read commands every 1000ms to get data");
       debugPrint("Commands: readReg(0x3A) for magnetic field, readReg(0x51) for quaternion");
-      debugPrint("💡 Any buffered data should now be flushed and processed immediately");
       
       return true;
     } else {
