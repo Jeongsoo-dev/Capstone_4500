@@ -14,10 +14,13 @@
 // Supports both Bluetooth and UART communication modes
 // Use Serial2 (UART2) for all debug output, keeps Serial available for IMU data
 //
-// FIXED BLUETOOTH ISSUES:
+// FIXED BLUETOOTH ISSUES (VERIFIED WORKING):
 // 1. CORRECTED UUIDs: ffe4=notify, ffe9=write (were swapped!)
 // 2. VENDOR PROTOCOL: Device needs periodic register read commands, not streaming
 // 3. COMMAND FORMAT: [0xFF, 0xAA, 0x27, regAddr, 0x00] for data requests
+// 4. CONNECTION HANGING: Added 20-second timeout and power cycle suggestions
+// 
+// NOTE: If connection hangs at pClient->connect(), power cycle the IMU device
 
 struct IMUData {
   float roll = 0.0;
@@ -179,6 +182,8 @@ void loop() {
     if (bleConnecting && !bleConnected && millis() - connectionStartTime > 20000) {
       debugPrint("🚨 CONNECTION TIMEOUT (20 seconds) - pClient->connect() likely hung!");
       debugPrint("This is the common ESP32 BLE connection hanging issue");
+      debugPrint("💡 SOLUTION: Power cycle the IMU (unplug/replug power supply)");
+      debugPrint("   This resets the BLE state and usually fixes connection issues");
       bleConnecting = false;
       if (pClient != nullptr) {
         try {
@@ -189,7 +194,7 @@ void loop() {
         delete pClient;
         pClient = nullptr;
       }
-      debugPrint("Connection state reset - will retry in 15 seconds");
+      debugPrint("Connection state reset - will retry in 25 seconds");
       
       // Add extra delay for hanging connections
       lastScanAttempt = millis() - 15000 + 25000; // 25 second delay after timeout
@@ -339,6 +344,8 @@ void scanForIMU() {
       // Add exponential backoff for repeated failures
       if (connectionAttempts > 3) {
         debugPrint("⏰ Multiple failures - increasing retry delay to 30 seconds");
+        debugPrint("💡 SUGGESTION: Try power cycling the IMU device (unplug/replug power)");
+        debugPrint("   This often resolves BLE connection stuck states");
         lastScanAttempt = millis() - 15000 + 30000; // Add extra delay
       }
     }
@@ -408,6 +415,12 @@ bool connectToIMU() {
 
 // BLE notification callback
 void onNotify(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
+  static bool firstPacket = true;
+  if (firstPacket) {
+    debugPrint("🎉 SUCCESS! BLE connection working and receiving data!");
+    debugPrint("✅ Corrected UUIDs and vendor protocol implementation successful");
+    firstPacket = false;
+  }
   debugPrintf("🔔 NOTIFICATION RECEIVED! %d bytes", length);
   
   // Always show raw packet data for analysis
