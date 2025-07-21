@@ -82,7 +82,6 @@ void printIMUData();
 void onNotify(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
 void sendDataRequest();  // Vendor protocol data request
 std::vector<uint8_t> createReadCommand(uint8_t regAddr);  // Vendor protocol helper
-void resetBLEConnectionState();  // Reset all BLE connection variables
 
 // BLE Client Callbacks
 class MyClientCallback : public BLEClientCallbacks {
@@ -137,11 +136,6 @@ void setup() {
   
   if (USE_BLUETOOTH_MODE) {
     debugPrint("==== IMU Data Monitor (Bluetooth 5.0) Starting ====");
-    debugPrint("🔧 Enhanced BLE Connection Handling:");
-    debugPrint("   • Works around ESP32 pClient->connect() hanging issue");
-    debugPrint("   • Detects actual data flow even when connect() fails");
-    debugPrint("   • Handles power cycling and buffered data properly");
-    debugPrint("   • Auto-resets stale connections");
     debugPrint("Initializing Bluetooth Low Energy...");
     
     if (initializeBLE()) {
@@ -181,80 +175,32 @@ void loop() {
       lastStatusTime = millis();
     }
     
-    // Handle deferred connection attempt with improved robustness
+    // Handle deferred connection attempt (OPTIMISTIC APPROACH)
     if (bleConnecting && !bleConnected && pClient != nullptr && targetDevice != nullptr) {
-      unsigned long elapsed = millis() - connectionStartTime;
-      
-      if (elapsed > 1000) { // Wait 1 second after scan completes, then try connection
-        debugPrint("🔄 Attempting BLE connection (non-blocking approach)...");
+      if (millis() - connectionStartTime > 2000) { // Wait 2 seconds after scan completes
+        debugPrint("🔄 OPTIMISTIC: Assuming connection worked, trying services directly...");
+        debugPrint("This works around the ESP32 BLE connect() hanging issue");
         
-        // Try the connection with a very short timeout approach
-        // We'll immediately proceed to service discovery regardless of connect() result
-        try {
-          debugPrint("📡 Calling pClient->connect() - this may hang, but we'll work around it...");
-          
-                     // Set a flag to track if we've attempted the connection (reset on each new connection attempt)
-            static bool connectAttempted = false;
-            static unsigned long lastConnectionAttemptTime = 0;
-            
-            // Reset the flag if this is a new connection attempt (handles power cycling)
-            if (millis() - lastConnectionAttemptTime > 30000) {
-              connectAttempted = false;
-              lastConnectionAttemptTime = millis();
-            }
-            
-            if (!connectAttempted) {
-              // Call connect in a non-blocking way by immediately proceeding
-              connectAttempted = true;
-              
-              // Try to connect to the device - this often hangs on ESP32
-              bool connectResult = pClient->connect(targetDevice);
-              debugPrintf("pClient->connect() returned: %s (often unreliable)", connectResult ? "true" : "false");
-            }
-          
-          // Regardless of connect() result, proceed with service discovery after a brief delay
-          if (elapsed > 3000) {
-            debugPrint("⚡ Proceeding with service discovery (connect() result ignored)");
-            debugPrint("This works around the ESP32 BLE connect() hanging/reliability issue");
-            
-            bleConnected = true;  // Assume connection worked at lower level
-            bleConnecting = false;
-            connectionAttempts = 0;
-            
-            debugPrint("✅ Moving to service discovery phase");
-          }
-        } catch (std::exception& e) {
-          debugPrintf("Exception during connection attempt: %s", e.what());
-          debugPrint("⚡ Proceeding anyway - connection may still work at lower level");
-          bleConnected = true;
-          bleConnecting = false;
-        }
+        // Skip calling connect() entirely - based on your observation that data flows anyway
+        // Just assume the lower-level connection is established and try to access services
+        bleConnected = true; 
+        bleConnecting = false;
+        connectionAttempts = 0;
+        
+        debugPrint("✅ Proceeding directly to service setup (connect() skipped)");
       }
     }
-    
-    // Handle complete connection timeout - reset everything and retry
-    if (bleConnecting && !bleConnected && millis() - connectionStartTime > 25000) {
-      debugPrint("🚨 COMPLETE CONNECTION TIMEOUT (25 seconds)");
-      debugPrint("Resetting BLE stack and retrying...");
+     
+     // Handle connection timeout - AGGRESSIVE TIMEOUT for hanging connect() calls
+    if (bleConnecting && !bleConnected && millis() - connectionStartTime > 20000) {
+      debugPrint("🚨 CONNECTION TIMEOUT (20 seconds) - pClient->connect() likely hung!");
+      debugPrint("This is the common ESP32 BLE connection hanging issue");
+      debugPrint("Based on your observation, proceeding anyway as connection may work");
       
-      // Clean up current attempt
+      // Don't clean up - just proceed as if connected
+      bleConnected = true;
       bleConnecting = false;
-      if (pClient != nullptr) {
-        try {
-          pClient->disconnect();
-        } catch (...) {
-          debugPrint("Exception during cleanup disconnect - continuing...");
-        }
-        delete pClient;
-        pClient = nullptr;
-      }
-      
-      // Reset characteristics
-      pNotifyCharacteristic = nullptr;
-      pWriteCharacteristic = nullptr;
-      
-      debugPrint("🔄 Will retry connection in 5 seconds...");
-      lastScanAttempt = millis() - 10000; // Force retry sooner
+      debugPrint("✅ Proceeding with 'hung' connection (data may actually be flowing)");
     }
     
     // Handle BLE connection state with retry delay and timeout
@@ -274,32 +220,11 @@ void loop() {
         lastDataRequestTime = millis(); // Initialize request timer
       } else {
         debugPrint(">>> Failed to establish service connection");
-        debugPrint("This might be due to pClient->connect() hanging but connection actually working");
-        debugPrint("Will retry service connection in next loop iteration");
-        
-        // Don't immediately disconnect - the connection might actually be working
-        // Just reset the connected flag to retry service connection
+        // If service connection fails, disconnect and retry
         bleConnected = false;
-        bleConnecting = false;
-        
-        // Add a small delay before retrying
-        lastScanAttempt = millis() - 10000; // Allow retry sooner
-      }
-    }
-    
-    // IMPORTANT: If we start receiving data, it means the connection is actually working
-    // This handles the case where pClient->connect() hung but data flows anyway
-    static bool dataFlowDetected = false;
-    if (packetCount > 0 && !dataFlowDetected) {
-      debugPrint("🎉 DATA FLOW DETECTED! Connection is actually working despite connect() issues");
-      debugPrint("This confirms the ESP32 BLE connect() hanging issue, but data flows");
-      dataFlowDetected = true;
-      
-      // Ensure we're marked as connected and continue normal operation
-      if (!bleConnected) {
-        debugPrint("Updating connection status based on actual data flow");
-        bleConnected = true;
-        bleConnecting = false;
+        if (pClient != nullptr) {
+          pClient->disconnect();
+        }
       }
     }
     
@@ -311,17 +236,8 @@ void loop() {
     
     // Show status if no packets received for a while
     if (bleConnected && pNotifyCharacteristic != nullptr && millis() - lastPacketTime > 5000 && packetCount == 0) {
-      debugPrint("No IMU packets received yet. Connection may still be establishing...");
-      debugPrint("If you see this repeatedly, try power cycling the IMU device");
+      debugPrint("No IMU packets received yet. Trying vendor protocol data requests...");
       lastPacketTime = millis(); // Prevent spam
-    }
-    
-    // Handle stale connections - if no data for a long time, reset and retry
-    if (bleConnected && packetCount > 0 && millis() - lastPacketTime > 30000) {
-      debugPrint("⚠️  No data received for 30 seconds - connection may be stale");
-      debugPrint("Resetting BLE connection to re-establish communication");
-      resetBLEConnectionState();
-      dataFlowDetected = false; // Reset data flow detection
     }
   } else {
     // UART mode - check for incoming data
@@ -472,20 +388,6 @@ bool connectToIMU() {
 
 // BLE notification callback
 void onNotify(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
-  static bool firstDataReceived = false;
-  if (!firstDataReceived) {
-    debugPrint("🎉 FIRST DATA RECEIVED! BLE connection is working!");
-    debugPrint("This proves the connection works despite any pClient->connect() issues");
-    firstDataReceived = true;
-    
-    // Ensure connection state is properly set
-    if (!bleConnected) {
-      bleConnected = true;
-      bleConnecting = false;
-      debugPrint("✅ Connection status updated based on actual data reception");
-    }
-  }
-  
   debugPrintf("🔔 NOTIFICATION RECEIVED! %d bytes", length);
   
   // Always show raw packet data for analysis
@@ -841,55 +743,12 @@ void printIMUData() {
                              sin(radians(imuData.roll)) * sin(radians(120)));  
     float dz3 = armRadius * (sin(radians(imuData.pitch)) * cos(radians(240)) + 
                              sin(radians(imuData.roll)) * sin(radians(240)));
-                            
+                             
     debugPrintf("Est. Actuator Δ (mm): A: %+6.1f  B: %+6.1f  C: %+6.1f", 
                   dz1, dz2, dz3);
   }
   
   debugPrint("=====================================================\n");
-}
-
-// =============================================================================
-// BLE CONNECTION STATE MANAGEMENT
-// =============================================================================
-
-// Reset all BLE connection state - useful after power cycling or connection issues
-void resetBLEConnectionState() {
-  debugPrint("🔄 Resetting BLE connection state...");
-  
-  // Reset connection flags
-  bleConnected = false;
-  bleConnecting = false;
-  deviceFound = false;
-  connectionAttempts = 0;
-  
-  // Clean up client
-  if (pClient != nullptr) {
-    try {
-      pClient->disconnect();
-    } catch (...) {
-      debugPrint("Exception during disconnect - continuing...");
-    }
-    delete pClient;
-    pClient = nullptr;
-  }
-  
-  // Reset characteristics
-  pNotifyCharacteristic = nullptr;
-  pWriteCharacteristic = nullptr;
-  
-  // Clean up target device
-  if (targetDevice != nullptr) {
-    delete targetDevice;
-    targetDevice = nullptr;
-  }
-  
-  // Reset timers
-  lastScanAttempt = 0;
-  connectionStartTime = 0;
-  lastDataRequestTime = 0;
-  
-  debugPrint("✅ BLE state reset complete");
 }
 
 // =============================================================================
