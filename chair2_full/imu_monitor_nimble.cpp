@@ -80,26 +80,7 @@ void onNotify(NimBLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pDa
 void sendDataRequest();  // Vendor protocol data request
 std::vector<uint8_t> createReadCommand(uint8_t regAddr);  // Vendor protocol helper
 
-// Debug print functions (using Serial2)
-void debugPrint(const char* message) {
-  Serial2.println(message);
-}
-
-void debugPrintf(const char* format, ...) {
-  va_list args;
-  va_start(args, format);
-  char buffer[512];
-  vsnprintf(buffer, sizeof(buffer), format, args);
-  va_end(args);
-  Serial2.println(buffer);
-}
-
-void setupDebugUART2() {
-  Serial2.begin(115200, SERIAL_8N1, /* RX pin */ 16, /* TX pin */ 17);
-  delay(100);
-  Serial2.println();
-  Serial2.println("=== DEBUG UART2 INITIALIZED ===");
-}
+// Debug functions are already declared in pin_definitions.h
 
 // nimBLE Client Callbacks - ENHANCED with better error handling
 class MyClientCallback : public NimBLEClientCallbacks {
