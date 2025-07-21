@@ -52,8 +52,8 @@ const bool DEBUG_MODE = true;
 
 // BLE Configuration - Using the actual UUIDs found via LightBlue AND VENDOR PYTHON CODE
 static BLEUUID SERVICE_UUID("0000ffe5-0000-1000-8000-00805f9a34fb");        // Main service  
-static BLEUUID NOTIFY_CHAR_UUID("0000ffe9-0000-1000-8000-00805f9a34fb");    // For receiving notifications (FIXED!)
-static BLEUUID WRITE_CHAR_UUID("0000ffe4-0000-1000-8000-00805f9a34fb");     // For sending commands (FIXED!)
+static BLEUUID NOTIFY_CHAR_UUID("0000ffe4-0000-1000-8000-00805f9a34fb");    // For receiving notifications (FIXED!)
+static BLEUUID WRITE_CHAR_UUID("0000ffe9-0000-1000-8000-00805f9a34fb");     // For sending commands (FIXED!)
 
 // BLE Variables
 BLEClient* pClient = nullptr;
