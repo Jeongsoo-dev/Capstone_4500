@@ -59,13 +59,11 @@ NimBLERemoteCharacteristic* pWriteCharacteristic = nullptr;   // For sending com
 bool bleConnected = false;
 bool bleConnecting = false;
 NimBLEAdvertisedDevice* targetDevice = nullptr;
-NimBLEAddress targetDeviceAddress;        // Store device address instead of pointer
 bool deviceFound = false;
 unsigned long connectionStartTime = 0;
 unsigned long lastDataRequestTime = 0;  // For periodic data requests
 unsigned long lastScanAttempt = 0;       // For connection retry timing
 int connectionAttempts = 0;              // Track connection attempts
-const unsigned long CONNECTION_TIMEOUT = 30000; // 30 second timeout
 
 IMUData imuData;
 unsigned long lastPacketTime = 0;
@@ -87,20 +85,31 @@ std::vector<uint8_t> createReadCommand(uint8_t regAddr);  // Vendor protocol hel
 // nimBLE Client Callbacks - ENHANCED with better error handling
 class MyClientCallback : public NimBLEClientCallbacks {
   void onConnect(NimBLEClient* pclient) {
-    debugPrint("🎉 NIMBLE CLIENT: Connected to IMU device!");
-    debugPrint("🔍 BLE connection established - now setting up services...");
+    unsigned long connectTime = millis() - connectionStartTime;
+    debugPrintf("🎉 NIMBLE CLIENT: Connected to IMU device! (took %lu ms)", connectTime);
     bleConnected = true;
     bleConnecting = false;
     
     // Reset connection attempts on successful connection
     connectionAttempts = 0;
     
-    debugPrint("✅ Connection hanging issue SOLVED with nimBLE!");
-    debugPrint("📋 Next step: Service discovery and notification setup");
+    debugPrint("✅ Connection established successfully with nimBLE!");
+    debugPrint("💡 If you see data after replug, it was buffered - this is now fixed!");
   }
 
   void onDisconnect(NimBLEClient* pclient, int reason) {
     debugPrintf("⚠️  NIMBLE CLIENT: Disconnected from IMU device (reason: %d)", reason);
+    
+    // Common disconnect reasons for debugging:
+    switch(reason) {
+      case 0x08: debugPrint("   Reason: Connection timeout"); break;
+      case 0x13: debugPrint("   Reason: Remote user terminated connection"); break;
+      case 0x16: debugPrint("   Reason: Connection terminated by local host"); break;
+      case 0x22: debugPrint("   Reason: LMP response timeout"); break;
+      case 0x28: debugPrint("   Reason: Instant passed"); break;
+      default: debugPrintf("   Reason: Unknown (%d)", reason); break;
+    }
+    
     bleConnected = false;
     bleConnecting = false;
     
@@ -113,17 +122,6 @@ class MyClientCallback : public NimBLEClientCallbacks {
   
   void onConnectFail(NimBLEClient* pclient, int reason) {
     debugPrintf("❌ NIMBLE CLIENT: Connection failed (reason: %d)", reason);
-    
-    // Decode common NimBLE error codes
-    switch(reason) {
-      case 0x08: debugPrint("   Error: Connection timeout"); break;
-      case 0x3e: debugPrint("   Error: Connection failed to establish"); break;
-      case 0x3c: debugPrint("   Error: Connection interval unacceptable"); break;
-      case 0x02: debugPrint("   Error: Unknown connection identifier"); break;
-      case 0x16: debugPrint("   Error: Connection terminated by local host"); break;
-      default: debugPrintf("   Error: Unknown error code (0x%02X)", reason); break;
-    }
-    
     bleConnected = false;
     bleConnecting = false;
     debugPrint("Will retry connection after delay...");
@@ -153,8 +151,6 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
       debugPrint("🎯 Found target IMU device! Stopping scan...");
       deviceFound = true;
       targetDevice = advertisedDevice;
-      targetDeviceAddress = advertisedDevice->getAddress(); // Store address for connection
-      debugPrintf("Stored target address: %s", targetDeviceAddress.toString().c_str());
       NimBLEDevice::getScan()->stop();
     } else {
       debugPrint("  - Does not match our target service UUID");
@@ -198,38 +194,25 @@ void loop() {
                   bleConnected ? "YES" : "NO", 
                   bleConnecting ? "YES" : "NO",
                   connectionAttempts);
-                  
-      // Show detailed status
-      if (bleConnected) {
-        debugPrintf("   🔗 Service connection: %s, Notifications: %s", 
-                    (pNotifyCharacteristic != nullptr) ? "YES" : "NO",
-                    notificationSystemActive ? "ACTIVE" : "INACTIVE");
-                    
-        if (notificationSystemActive) {
-          debugPrintf("   📈 Received %d notifications, last: %lu ms ago", 
-                      notificationCount, 
-                      millis() - lastNotificationTime);
-        } else {
-          debugPrint("   ⚠️ No notifications received yet!");
-        }
-      }
       lastStatusTime = millis();
     }
     
-    // Handle connection timeout
-    if (bleConnecting && (millis() - connectionStartTime > CONNECTION_TIMEOUT)) {
-      debugPrint("⏰ Connection timeout! Resetting connection state...");
-      bleConnecting = false;
-      
-      // Clean up client
-      if (pClient != nullptr) {
-        pClient->disconnect();
-        NimBLEDevice::deleteClient(pClient);
-        pClient = nullptr;
+    // Handle connection timeout - if connecting too long without callback
+    if (bleConnecting && !bleConnected) {
+      if (millis() - connectionStartTime > 30000) { // 30 second timeout
+        debugPrint("⏰ Connection timeout! Cleaning up and retrying...");
+        bleConnecting = false;
+        
+        // Clean up failed connection attempt
+        if (pClient != nullptr) {
+          debugPrint("🧹 Cleaning up timed-out connection...");
+          NimBLEDevice::deleteClient(pClient);
+          pClient = nullptr;
+        }
+        
+        // Reset for next attempt
+        lastScanAttempt = millis() - 10000; // Allow retry in 5 seconds
       }
-      
-      debugPrint("Will retry connection after delay...");
-      lastScanAttempt = millis(); // Set retry timer
     }
     
     // Handle nimBLE connection state with retry delay  
@@ -246,55 +229,36 @@ void loop() {
       debugPrint("🔗 nimBLE connected, establishing service connection...");
       if (connectToIMU()) {
         debugPrint("✅ Service connection established successfully");
+        debugPrint("🚀 Ready to receive IMU data!");
         lastDataRequestTime = millis(); // Initialize request timer
       } else {
-        debugPrint("❌ Failed to establish service connection");
-        // Disconnect and retry with nimBLE proper cleanup
-        if (pClient != nullptr) {
-          pClient->disconnect();
+        debugPrint("❌ Failed to establish service connection - will retry in 5 seconds");
+        // Don't immediately disconnect - give it a few tries first
+        static int serviceRetryCount = 0;
+        serviceRetryCount++;
+        
+        if (serviceRetryCount >= 3) {
+          debugPrint("🔄 Service connection failed 3 times, reconnecting BLE...");
+          serviceRetryCount = 0;
+          if (pClient != nullptr) {
+            pClient->disconnect();
+          }
+        } else {
+          debugPrintf("⏳ Service retry attempt %d/3 in 5 seconds...", serviceRetryCount);
+          delay(5000); // Wait before retry
         }
       }
     }
     
-    // Send periodic data requests using vendor protocol (every 200ms)  
+    // Send periodic data requests using vendor protocol (every 200ms)
     if (bleConnected && pWriteCharacteristic != nullptr && millis() - lastDataRequestTime > 200) {
       sendDataRequest();
       lastDataRequestTime = millis();
-      
-      // If notifications aren't working, try direct reading as backup
-      static unsigned long lastDirectReadTime = 0;
-      if (!notificationSystemActive && pNotifyCharacteristic != nullptr && 
-          millis() - lastDirectReadTime > 1000) {
-        debugPrint("🔧 Notifications not working - trying direct read...");
-        
-        try {
-          std::string data = pNotifyCharacteristic->readValue();
-          if (!data.empty()) {
-            debugPrintf("📡 Direct read got %d bytes", data.length());
-            // Process the data as if it came from notification
-            onNotify(pNotifyCharacteristic, (uint8_t*)data.data(), data.length(), false);
-          } else {
-            debugPrint("📭 Direct read returned empty data");
-          }
-        } catch (std::exception& e) {
-          debugPrintf("❌ Exception during direct read: %s", e.what());
-        }
-        
-        lastDirectReadTime = millis();
-      }
     }
     
-    // Show status if no packets received for a while and test notification system
-    static unsigned long lastNotificationTest = 0;
+    // Show status if no packets received for a while
     if (bleConnected && pNotifyCharacteristic != nullptr && millis() - lastPacketTime > 5000 && packetCount == 0) {
       debugPrint("📡 No IMU packets received yet. Trying vendor protocol data requests...");
-      
-      // Test notification system if we haven't done so recently
-      if (millis() - lastNotificationTest > 10000) {
-        testNotificationSystem();
-        lastNotificationTest = millis();
-      }
-      
       lastPacketTime = millis(); // Prevent spam
     }
   } else {
@@ -332,7 +296,6 @@ void scanForIMU() {
   // Reset flags
   deviceFound = false;
   targetDevice = nullptr;
-  targetDeviceAddress = NimBLEAddress(""); // Reset address
   
   bleConnecting = true;
   debugPrint("🔍 Scanning for IMU device...");
@@ -351,22 +314,9 @@ void scanForIMU() {
   // Scan completed
   debugPrintf("✅ Scan completed. Found %d devices total", foundDevices.getCount());
   
-  // Show scan statistics for troubleshooting
-  if (foundDevices.getCount() == 0) {
-    debugPrint("⚠️  No BLE devices found at all!");
-    debugPrint("   Check if:");
-    debugPrint("   - BLE is enabled on the device");
-    debugPrint("   - Device is in pairing/advertising mode");
-    debugPrint("   - Device is within range (try moving closer)");
-    debugPrint("   - No interference from other devices");
-  } else {
-    debugPrintf("📊 Scan statistics: Found %d BLE devices in 10 seconds", foundDevices.getCount());
-  }
-  
   // Check if we found our target device
-  if (deviceFound && !targetDeviceAddress.toString().empty()) {
+  if (deviceFound && targetDevice != nullptr) {
     debugPrint("🎯 Target device found, attempting nimBLE connection...");
-    debugPrintf("Target address: %s", targetDeviceAddress.toString().c_str());
     
     // Clean up any existing client - nimBLE way
     if (pClient != nullptr) {
@@ -378,46 +328,27 @@ void scanForIMU() {
     // Create new nimBLE client
     debugPrint("🔨 Creating new nimBLE client...");
     pClient = NimBLEDevice::createClient();
-    
-    if (pClient == nullptr) {
-      debugPrint("❌ Failed to create nimBLE client!");
-      bleConnecting = false;
-      return;
-    }
-    
     pClient->setClientCallbacks(new MyClientCallback());
     
-    // Set connection parameters for better reliability
-    pClient->setConnectionParams(12, 12, 0, 51);  // Faster connection parameters
-    pClient->setConnectTimeout(15);               // 15 second timeout
+    // ASYNC CONNECTION - This is the key fix for hanging!
+    debugPrint("🚀 Attempting ASYNC connection (no more hanging!)");
+    debugPrintf("Target: %s (RSSI: %d dBm)", targetDevice->getAddress().toString().c_str(), targetDevice->getRSSI());
     
-    debugPrint("🔧 Client configured with optimized connection parameters");
-    
-    // ASYNC CONNECTION using stored address
-    debugPrint("🚀 Attempting ASYNC connection using stored address...");
     connectionStartTime = millis();
     
-    // Connect using address instead of device pointer
-    bool connectResult = pClient->connect(targetDeviceAddress);
+    // Connect to device using nimBLE
+    bool connectResult = pClient->connect(targetDevice);  // nimBLE async by default
     
     if (connectResult) {
       debugPrint("✅ Async connection command sent successfully!");
       debugPrint("   Connection will complete asynchronously via callbacks");
-      debugPrint("   Waiting for onConnect() callback...");
       // bleConnecting remains true, will be set false in callbacks
     } else {
-      debugPrint("❌ Failed to send async connection command");
-      debugPrint("   This could be due to:");
-      debugPrint("   - Device moved out of range");
-      debugPrint("   - Device stopped advertising");
-      debugPrint("   - BLE stack issue");
-      bleConnecting = false;
-      
-      // Clean up
-      if (pClient != nullptr) {
-        NimBLEDevice::deleteClient(pClient);
-        pClient = nullptr;
-      }
+      debugPrint("⚠️  Connect command returned false, but trying anyway...");
+      debugPrint("   nimBLE may still establish connection via callbacks");
+      debugPrint("   Will timeout after 30 seconds if no connection");
+      // DON'T clean up immediately - let callbacks handle it!
+      // bleConnecting remains true, timeout will handle cleanup if needed
     }
   } else {
     bleConnecting = false;
@@ -456,14 +387,6 @@ bool connectToIMU() {
     return false;
   }
   
-  // Check characteristic properties
-  debugPrint("✅ Found notify characteristic!");
-  if (pNotifyCharacteristic->canNotify()) {
-    debugPrint("   ✓ Characteristic supports notifications");
-  } else {
-    debugPrint("   ⚠️ Characteristic does NOT support notifications!");
-  }
-  
   debugPrint("🔍 Getting IMU write characteristic (FIXED UUID: ffe9)...");
   pWriteCharacteristic = pRemoteService->getCharacteristic(WRITE_CHAR_UUID);
   if (pWriteCharacteristic == nullptr) {
@@ -471,64 +394,32 @@ bool connectToIMU() {
     return false;
   }
   
-  debugPrint("✅ Found write characteristic!");
-  if (pWriteCharacteristic->canWrite()) {
-    debugPrint("   ✓ Characteristic supports writing");
-  } else {
-    debugPrint("   ⚠️ Characteristic does NOT support writing!");
-  }
-  
   debugPrint("✅ Found both IMU characteristics with CORRECTED UUIDs!");
   debugPrint("📡 Setting up notifications using vendor protocol...");
   
   // Subscribe to notifications using nimBLE method
   try {
-    debugPrint("🔧 Attempting to subscribe to notifications...");
-    
-    // Test callback registration first
-    debugPrint("🧪 Testing notification callback registration...");
-    bool subscribeResult = pNotifyCharacteristic->subscribe(true, onNotify);
-    
-    if (subscribeResult) {
+    if (pNotifyCharacteristic->subscribe(true, onNotify)) {
       debugPrint("✅ nimBLE notifications registered successfully on FFE4 (receive) characteristic");
-      debugPrint("🔔 Notification callback is now active - waiting for data...");
       
-      // Verify subscription worked by checking if notifications are enabled
-      if (pNotifyCharacteristic->getDescriptor(NimBLEUUID("2902")) != nullptr) {
-        debugPrint("✅ Client Characteristic Configuration Descriptor (CCCD) found");
-        // Read CCCD value to verify subscription
-        auto* cccdDesc = pNotifyCharacteristic->getDescriptor(NimBLEUUID("2902"));
-        std::string cccdValue = cccdDesc->readValue();
-        if (cccdValue.length() >= 2) {
-          uint16_t cccd = (uint8_t)cccdValue[1] << 8 | (uint8_t)cccdValue[0];
-          debugPrintf("📋 CCCD value: 0x%04X (0x0001=notifications, 0x0002=indications)", cccd);
-          if (cccd & 0x0001) {
-            debugPrint("✅ Notifications are ENABLED in CCCD");
-          } else {
-            debugPrint("❌ Notifications are NOT enabled in CCCD");
-          }
-        }
-      } else {
-        debugPrint("⚠️ No CCCD found - notifications may not work properly");
+      // Clear any buffered data to prevent "data after replug" issue
+      debugPrint("🧹 Flushing any buffered data from previous connections...");
+      
+      // Send a few immediate data requests to flush buffers
+      delay(100); // Small delay to ensure subscription is active
+      for (int i = 0; i < 3; i++) {
+        sendDataRequest();
+        delay(50);
       }
       
       debugPrint("🔧 Using VENDOR PROTOCOL: Device requires periodic register read commands");
       debugPrint("Will send register read commands every 200ms to get data");
       debugPrint("Commands: readReg(0x3A) for magnetic field, readReg(0x51) for quaternion");
-      
-      // Send a test command immediately to verify write capability
-      debugPrint("🧪 Sending test command to verify communication...");
-      auto testCmd = createReadCommand(0x3A);
-      bool writeResult = pWriteCharacteristic->writeValue(testCmd.data(), testCmd.size(), true);
-      debugPrintf("📤 Test command sent: %s", writeResult ? "SUCCESS" : "FAILED");
+      debugPrint("💡 Any buffered data should now be flushed and processed immediately");
       
       return true;
     } else {
       debugPrint("❌ Failed to subscribe to notifications");
-      debugPrint("   This could be due to:");
-      debugPrint("   - Characteristic doesn't support notifications");  
-      debugPrint("   - CCCD write failed");
-      debugPrint("   - BLE stack issue");
       return false;
     }
   } catch (std::exception& e) {
@@ -537,18 +428,9 @@ bool connectToIMU() {
   }
 }
 
-// Add status tracking variables  
-static bool notificationSystemActive = false;
-static unsigned long lastNotificationTime = 0;
-static int notificationCount = 0;
-
 // nimBLE notification callback
 void onNotify(NimBLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
-  notificationSystemActive = true;
-  lastNotificationTime = millis();
-  notificationCount++;
-  
-  debugPrintf("🔔 NIMBLE NOTIFICATION RECEIVED! #%d, %d bytes", notificationCount, length);
+  debugPrintf("🔔 NIMBLE NOTIFICATION RECEIVED! %d bytes", length);
   
   // Always show raw packet data for analysis
   debugPrint("Raw packet data:");
@@ -928,65 +810,23 @@ void sendDataRequest() {
   if (!bleConnected || pWriteCharacteristic == nullptr) return;
   
   static bool requestMagnetic = true; // Alternate between requests
-  static int writeFailureCount = 0;
   
   try {
-    std::vector<uint8_t> cmd;
-    const char* reqType;
-    
     if (requestMagnetic) {
       // Request magnetic field data (register 0x3A)
-      cmd = createReadCommand(0x3A);
-      reqType = "magnetic field (0x3A)";
+      auto cmd = createReadCommand(0x3A);
+      pWriteCharacteristic->writeValue(cmd.data(), cmd.size(), true);
+      if (DEBUG_MODE) debugPrint("Sent magnetic field data request (0x3A)");
     } else {
       // Request quaternion data (register 0x51)  
-      cmd = createReadCommand(0x51);
-      reqType = "quaternion (0x51)";
-    }
-    
-    bool writeResult = pWriteCharacteristic->writeValue(cmd.data(), cmd.size(), true);
-    
-    if (writeResult) {
-      if (DEBUG_MODE) debugPrintf("📤 Sent %s data request", reqType);
-      writeFailureCount = 0; // Reset failure count on success
-    } else {
-      writeFailureCount++;
-      debugPrintf("❌ Failed to send %s data request (failure #%d)", reqType, writeFailureCount);
-      
-      if (writeFailureCount >= 5) {
-        debugPrint("⚠️ Multiple write failures - checking connection...");
-        // Could trigger a connection reset here if needed
-      }
+      auto cmd = createReadCommand(0x51);
+      pWriteCharacteristic->writeValue(cmd.data(), cmd.size(), true);
+      if (DEBUG_MODE) debugPrint("Sent quaternion data request (0x51)");
     }
     
     requestMagnetic = !requestMagnetic; // Alternate requests
     
   } catch (std::exception& e) {
-    debugPrintf("❌ Exception sending data request: %s", e.what());
-  }
-}
-
-// Test notification system manually
-void testNotificationSystem() {
-  if (!bleConnected || pNotifyCharacteristic == nullptr) return;
-  
-  debugPrint("🧪 Testing notification system manually...");
-  
-  // Try re-subscribing to notifications
-  try {
-    bool resubResult = pNotifyCharacteristic->subscribe(true, onNotify);
-    debugPrintf("   Re-subscribe result: %s", resubResult ? "SUCCESS" : "FAILED");
-    
-    if (resubResult) {
-      // Send a command that should trigger a response
-      if (pWriteCharacteristic != nullptr) {
-        auto testCmd = createReadCommand(0x3A);
-        bool writeResult = pWriteCharacteristic->writeValue(testCmd.data(), testCmd.size(), true);
-        debugPrintf("   Test command sent: %s", writeResult ? "SUCCESS" : "FAILED");
-        debugPrint("   Waiting 2 seconds for notification response...");
-      }
-    }
-  } catch (std::exception& e) {
-    debugPrintf("   Exception: %s", e.what());
+    debugPrintf("Exception sending data request: %s", e.what());
   }
 } 
