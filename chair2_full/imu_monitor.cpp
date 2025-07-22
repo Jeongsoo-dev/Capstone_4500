@@ -64,6 +64,7 @@ unsigned long lastPacketTime = 0;
 int packetCount = 0;
 
 // Function declarations
+void sendFactoryResetCommand();
 bool initializeBLE();
 bool connectToIMU();
 void scanForIMU();
@@ -122,10 +123,7 @@ class MyAdvertisedDeviceCallbacks: public NimBLEScanCallbacks {
       debugPrint("Found target IMU device! Stopping scan...");
       deviceFound = true;
       targetDevice = const_cast<NimBLEAdvertisedDevice*>(advertisedDevice);
-      
-      // Stop the scan
       NimBLEDevice::getScan()->stop();
-      debugPrint("Scan stopped. Connection will be attempted in main loop...");
     } else {
       debugPrint("  - Does not match our target service UUID");
     }
@@ -144,6 +142,12 @@ void setup() {
     
     if (initializeBLE()) {
       debugPrint("NimBLE initialized successfully");
+      
+      // Attempt a pre-emptive factory reset before scanning
+      // This helps if the IMU is in a weird bonded state
+      sendFactoryResetCommand();
+      delay(500); // Wait for IMU to process command
+      
       scanForIMU();
     } else {
       debugPrint("NimBLE initialization failed!");
@@ -174,48 +178,15 @@ void loop() {
       lastStatusTime = millis();
     }
     
-    // Handle scan timeout (if still scanning after 30 seconds)
-    if (bleConnecting && !deviceFound && millis() - connectionStartTime > 30000) {
-      debugPrint("Scan timeout (30 seconds) - no target device found");
-      NimBLEDevice::getScan()->stop();
-      bleConnecting = false;
-    }
-    
-    // Handle connection timeout (if connecting but not connected after 8 seconds)
-    if (bleConnecting && deviceFound && !bleConnected && millis() - connectionStartTime > 8000) {
+    // Handle connection timeout
+    if (bleConnecting && !bleConnected && millis() - connectionStartTime > 8000) {
       debugPrint("Connection timeout (8 seconds) - resetting connection state");
       bleConnecting = false;
       if (pClient != nullptr) {
         pClient->disconnect();
-        pClient = nullptr;
+        pClient = nullptr; // Don't delete, just set to null
       }
       servicesDiscovered = false;
-      deviceFound = false; // Reset for next scan
-    }
-    
-    // Handle device found - attempt connection
-    if (bleConnecting && deviceFound && !bleConnected && pClient == nullptr) {
-      debugPrint("Target device found, attempting connection...");
-      
-      pClient = NimBLEDevice::createClient();
-      pClient->setClientCallbacks(new MyClientCallback());
-      
-      debugPrint("Calling pClient->connect() with async=true...");
-      
-      // Use NimBLE's async connection
-      bool connectResult = pClient->connect(targetDevice, true, true); // deleteAttributes=true, asyncConnect=true
-      debugPrintf("pClient->connect() returned: %s", connectResult ? "SUCCESS" : "FAILED");
-      
-      if (!connectResult) {
-        debugPrint("Failed to initiate NimBLE connection");
-        bleConnecting = false;
-        pClient = nullptr;
-        deviceFound = false; // Reset for next scan
-      } else {
-        debugPrint("NimBLE async connection initiated successfully");
-        // Connection status will be updated by callbacks
-        // Don't reset bleConnecting here - let callbacks handle it
-      }
     }
     
     // Handle BLE connection state with retry delay
@@ -279,12 +250,12 @@ void scanForIMU() {
   
   // Reset flags
   deviceFound = false;
-  targetDevice = nullptr;
+    targetDevice = nullptr;
   
   bleConnecting = true;
   debugPrint("Scanning for IMU device with NimBLE...");
   debugPrintf("Looking for service UUID: %s", SERVICE_UUID.toString().c_str());
-  debugPrint("Starting non-blocking scan...");
+  debugPrint("Scan will run for 10 seconds...");
   
   NimBLEScan* pBLEScan = NimBLEDevice::getScan();
   pBLEScan->setScanCallbacks(new MyAdvertisedDeviceCallbacks());
@@ -292,12 +263,46 @@ void scanForIMU() {
   pBLEScan->setWindow(449);
   pBLEScan->setActiveScan(true);
   
-  // Start non-blocking scan - returns immediately
-  bool scanStarted = pBLEScan->start(0, false); // 0 = continuous scan, false = fresh start
-  debugPrintf("Non-blocking scan started: %s", scanStarted ? "YES" : "NO");
+  // Start scan - this will block for 10 seconds or until device is found
+  bool scanStarted = pBLEScan->start(10, false); // Scan for 10 seconds
   
-  // Set a timeout for the scan in the main loop
-  connectionStartTime = millis();
+  // Scan completed
+  NimBLEScanResults foundDevices = pBLEScan->getResults();
+  debugPrintf("Scan completed. Started: %s, Found %d devices total", 
+              scanStarted ? "YES" : "NO", foundDevices.getCount());
+  
+  // Check if we found our target device
+  if (deviceFound && targetDevice != nullptr) {
+    debugPrint("Target device found, attempting connection...");
+    
+    // Clean up any existing client
+    if (pClient != nullptr) {
+      pClient->disconnect();
+      pClient = nullptr; // Don't delete, just set to null
+    }
+    
+    pClient = NimBLEDevice::createClient();
+    pClient->setClientCallbacks(new MyClientCallback());
+    
+    connectionStartTime = millis();
+    debugPrint("Calling pClient->connect() with async=true...");
+    
+    // Use NimBLE's async connection - this is the key improvement!
+    bool connectResult = pClient->connect(targetDevice, true, true); // deleteAttributes=true, asyncConnect=true
+    debugPrintf("pClient->connect() returned: %s", connectResult ? "SUCCESS" : "FAILED");
+    
+    if (!connectResult) {
+      debugPrint("Failed to initiate NimBLE connection");
+      bleConnecting = false;
+      pClient = nullptr; // Don't delete, just set to null
+    } else {
+      debugPrint("NimBLE async connection initiated successfully");
+      // Connection status will be updated by callbacks
+    }
+  } else {
+    bleConnecting = false;
+    debugPrint("No matching IMU device found during scan");
+  }
 }
 
 bool connectToIMU() {
@@ -348,6 +353,16 @@ bool connectToIMU() {
     }
     
     delay(100); // Give time for subscription to take effect
+    
+    // Try to send a command to start data transmission
+    debugPrint("Sending start command to IMU...");
+    uint8_t startCmd[] = {0xFF, 0xAA, 0x69, 0x88, 0xB5}; // Common WT901 start command
+    if (pRemoteCharacteristic->canWrite()) {
+      pRemoteCharacteristic->writeValue(startCmd, sizeof(startCmd), false);
+      debugPrint("Start command sent successfully");
+    } else {
+      debugPrint("Characteristic not writable, skipping start command");
+    }
     
     delay(100); // Give IMU time to process command
     
@@ -576,4 +591,28 @@ void printIMUData() {
   debugPrintf("Est. Actuator Δ (mm): A: %+6.1f  B: %+6.1f  C: %+6.1f", 
                 dz1, dz2, dz3);
   debugPrint("=====================================================\n");
+}
+
+void sendFactoryResetCommand() {
+  debugPrint("Sending factory reset command to any listening IMU...");
+
+  // This broadcasts a command to any listening device that understands it.
+  // This is a "fire and forget" operation before we even connect.
+  // It's useful if the IMU is bonded to another device and not advertising correctly.
+
+  NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
+  
+  // Create a raw manufacturer data payload for the reset command
+  // Command sequence: Unlock -> Restore Factory Settings -> Save
+  uint8_t resetCmd[] = {0xFF, 0xAA, 0x69, 0xB5, 0x88, 0xFF, 0xAA, 0x00, 0x01, 0x00, 0xFF, 0xAA, 0x00, 0x00, 0x00};
+  
+  NimBLEAdvertisementData manuData;
+  manuData.setManufacturerData(std::string((char*)resetCmd, sizeof(resetCmd)));
+  
+  pAdvertising->setAdvertisementData(manuData);
+  pAdvertising->start();
+  delay(200); // Advertise for 200ms
+  pAdvertising->stop();
+
+  debugPrint("Factory reset command sent.");
 } 
