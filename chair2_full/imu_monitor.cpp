@@ -125,34 +125,7 @@ class MyAdvertisedDeviceCallbacks: public NimBLEScanCallbacks {
       
       // Stop the scan
       NimBLEDevice::getScan()->stop();
-      
-      // Immediately attempt connection
-      debugPrint("Target device found, attempting connection...");
-      
-      // Clean up any existing client
-      if (pClient != nullptr) {
-        pClient->disconnect();
-        pClient = nullptr;
-      }
-      
-      pClient = NimBLEDevice::createClient();
-      pClient->setClientCallbacks(new MyClientCallback());
-      
-      connectionStartTime = millis();
-      debugPrint("Calling pClient->connect() with async=true...");
-      
-      // Use NimBLE's async connection
-      bool connectResult = pClient->connect(targetDevice, true, true); // deleteAttributes=true, asyncConnect=true
-      debugPrintf("pClient->connect() returned: %s", connectResult ? "SUCCESS" : "FAILED");
-      
-      if (!connectResult) {
-        debugPrint("Failed to initiate NimBLE connection");
-        bleConnecting = false;
-        pClient = nullptr;
-      } else {
-        debugPrint("NimBLE async connection initiated successfully");
-        // Connection status will be updated by callbacks
-      }
+      debugPrint("Scan stopped. Connection will be attempted in main loop...");
     } else {
       debugPrint("  - Does not match our target service UUID");
     }
@@ -218,6 +191,31 @@ void loop() {
       }
       servicesDiscovered = false;
       deviceFound = false; // Reset for next scan
+    }
+    
+    // Handle device found - attempt connection
+    if (bleConnecting && deviceFound && !bleConnected && pClient == nullptr) {
+      debugPrint("Target device found, attempting connection...");
+      
+      pClient = NimBLEDevice::createClient();
+      pClient->setClientCallbacks(new MyClientCallback());
+      
+      debugPrint("Calling pClient->connect() with async=true...");
+      
+      // Use NimBLE's async connection
+      bool connectResult = pClient->connect(targetDevice, true, true); // deleteAttributes=true, asyncConnect=true
+      debugPrintf("pClient->connect() returned: %s", connectResult ? "SUCCESS" : "FAILED");
+      
+      if (!connectResult) {
+        debugPrint("Failed to initiate NimBLE connection");
+        bleConnecting = false;
+        pClient = nullptr;
+        deviceFound = false; // Reset for next scan
+      } else {
+        debugPrint("NimBLE async connection initiated successfully");
+        // Connection status will be updated by callbacks
+        // Don't reset bleConnecting here - let callbacks handle it
+      }
     }
     
     // Handle BLE connection state with retry delay
@@ -350,16 +348,6 @@ bool connectToIMU() {
     }
     
     delay(100); // Give time for subscription to take effect
-    
-    // Try to send a command to start data transmission
-    debugPrint("Sending start command to IMU...");
-    uint8_t startCmd[] = {0xFF, 0xAA, 0x69, 0x88, 0xB5}; // Common WT901 start command
-    if (pRemoteCharacteristic->canWrite()) {
-      pRemoteCharacteristic->writeValue(startCmd, sizeof(startCmd), false);
-      debugPrint("Start command sent successfully");
-    } else {
-      debugPrint("Characteristic not writable, skipping start command");
-    }
     
     delay(100); // Give IMU time to process command
     
