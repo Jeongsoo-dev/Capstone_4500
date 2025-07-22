@@ -248,7 +248,7 @@ void scanForIMU() {
   bleConnecting = true;
   debugPrint("Scanning for IMU device with NimBLE...");
   debugPrintf("Looking for service UUID: %s", SERVICE_UUID.toString().c_str());
-  debugPrint("Scan will run for 10 seconds...");
+  debugPrint("Scan will run for 240 seconds...");
   
   NimBLEScan* pBLEScan = NimBLEDevice::getScan();
   pBLEScan->setScanCallbacks(new MyAdvertisedDeviceCallbacks());
@@ -256,8 +256,8 @@ void scanForIMU() {
   pBLEScan->setWindow(449);
   pBLEScan->setActiveScan(true);
   
-  // Start scan - this will block for 10 seconds or until device is found
-  bool scanStarted = pBLEScan->start(10, true); // Scan for 10 seconds
+  // Start scan - this will block for 30 seconds or until device is found
+  bool scanStarted = pBLEScan->start(240, false); // Scan for 30 seconds, start fresh
   
   // Scan completed
   NimBLEScanResults foundDevices = pBLEScan->getResults();
