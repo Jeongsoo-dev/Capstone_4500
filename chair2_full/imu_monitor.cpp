@@ -147,12 +147,14 @@ void setup() {
 
 void loop() {
   if (USE_BLUETOOTH_MODE) {
-    // Debug: Show current BLE state
+    // Debug: Show current BLE state with more detail
     static unsigned long lastStatusTime = 0;
     if (millis() - lastStatusTime > 3000) {
-      debugPrintf("BLE Status - Connected: %s, Connecting: %s", 
+      debugPrintf("LOOP-STATUS: Connected: %s, Connecting: %s, pClient: %s, pChar: %s", 
                   bleConnected ? "YES" : "NO", 
-                  bleConnecting ? "YES" : "NO");
+                  bleConnecting ? "YES" : "NO",
+                  (pClient != nullptr) ? "OK" : "NULL",
+                  (pRemoteCharacteristic != nullptr) ? "OK" : "NULL");
       lastStatusTime = millis();
     }
     
@@ -161,6 +163,7 @@ void loop() {
       debugPrint("Connection timeout (8 seconds) - resetting connection state");
       bleConnecting = false;
       if (pClient != nullptr) {
+        // Client might be in a bad state, best to delete and recreate
         pClient->disconnect();
         delete pClient;
         pClient = nullptr;
@@ -171,7 +174,7 @@ void loop() {
     static unsigned long lastScanTime = 0;
     if (!bleConnected && !bleConnecting) {
       if (millis() - lastScanTime > 10000) { // Wait 10 seconds between scan attempts
-        debugPrint("Attempting to connect to IMU...");
+        debugPrint("LOOP: Not connected. Trying to scan and connect.");
         scanForIMU();
         lastScanTime = millis();
       }
@@ -179,31 +182,28 @@ void loop() {
     
     // Try to establish service connection after BLE connection
     if (bleConnected && pRemoteCharacteristic == nullptr) {
-      debugPrint(">>> BLE connected, establishing service connection...");
+      debugPrint("LOOP: BLE connected, characteristic is NULL. Trying to get service...");
       if (connectToIMU()) {
-        debugPrint(">>> Service connection established successfully");
+        debugPrint("LOOP: Service connection SUCCEEDED.");
+        lastPacketTime = millis(); // Reset packet timer
       } else {
-        debugPrint(">>> Failed to establish service connection");
+        debugPrint("LOOP: Service connection FAILED. Disconnecting to retry.");
         // If service connection fails, disconnect and retry
-        bleConnected = false;
         if (pClient != nullptr) {
-          pClient->disconnect();
+          pClient->disconnect(); // Callback will set bleConnected to false
         }
       }
-    }
-    
-    // Show status if no packets received for a while
-    if (bleConnected && pRemoteCharacteristic != nullptr && millis() - lastPacketTime > 5000 && packetCount == 0) {
-      debugPrint("\n------------------------- STATUS -------------------------");
-      debugPrint("Connected, but no IMU data packets received yet.");
-      debugPrint("TROUBLESHOOTING:");
-      debugPrint(" 1. Check that the IMU is powered on and in range.");
-      debugPrint(" 2. Verify SERVICE_UUID and CHAR_UUID in the code match your IMU.");
-      debugPrint(" 3. Look at 'Characteristic Properties' log above.");
-      debugPrint("    - It MUST have 'NOTIFY' or 'INDICATE' property.");
-      debugPrint("    - If a start command is used, it MUST have 'WRITE' property.");
-      debugPrint("----------------------------------------------------------\n");
-      lastPacketTime = millis(); // Prevent spam
+    } 
+    // This block represents the "fully connected and subscribed" state
+    else if (bleConnected && pRemoteCharacteristic != nullptr) {
+      if (millis() - lastPacketTime > 5000) {
+        if (packetCount == 0) {
+          debugPrint("LOOP: Connected, but no packets received yet. Check IMU/UUIDs.");
+        } else {
+          debugPrintf("LOOP: Connected, last packet was >5s ago. Total packets: %d", packetCount);
+        }
+        lastPacketTime = millis(); // Prevent spam
+      }
     }
   } else {
     // UART mode - check for incoming data
@@ -294,10 +294,11 @@ void scanForIMU() {
 
 bool connectToIMU() {
   debugPrint("*** connectToIMU() called");
-  if (!bleConnected || pClient == nullptr) {
-    debugPrintf("*** Early return: bleConnected=%s, pClient=%s", 
+  if (!bleConnected || pClient == nullptr || !pClient->isConnected()) {
+    debugPrintf("*** Early return: bleConnected=%s, pClient=%s, pClient->isConnected=%s", 
                 bleConnected ? "true" : "false", 
-                pClient ? "valid" : "null");
+                pClient ? "valid" : "null",
+                (pClient && pClient->isConnected()) ? "true" : "false");
     return false;
   }
   
@@ -325,13 +326,6 @@ bool connectToIMU() {
     return false;
   }
   
-  debugPrint(">>> Characteristic Properties Found <<<");
-  if (pRemoteCharacteristic->canRead())   { debugPrint("  - READ"); }
-  if (pRemoteCharacteristic->canWrite())  { debugPrint("  - WRITE"); }
-  if (pRemoteCharacteristic->canNotify()) { debugPrint("  - NOTIFY"); }
-  if (pRemoteCharacteristic->canIndicate()) { debugPrint("  - INDICATE"); }
-  debugPrint("------------------------------------");
-  
   debugPrint("Found IMU characteristic, setting up notifications...");
   
   // Try to register for notifications without checking descriptors first
@@ -349,9 +343,9 @@ bool connectToIMU() {
     }
     
     // Try to send a command to start data transmission
-    debugPrint("Sending start command to IMU...");
-    uint8_t startCmd[] = {0xFF, 0xAA, 0x69, 0x88, 0xB5}; // Common WT901 start command
-    pRemoteCharacteristic->writeValue(startCmd, sizeof(startCmd));
+    // debugPrint("Sending start command to IMU...");
+    // uint8_t startCmd[] = {0xFF, 0xAA, 0x69, 0x88, 0xB5}; // Common WT901 start command
+    // pRemoteCharacteristic->writeValue(startCmd, sizeof(startCmd));
     
     delay(100); // Give IMU time to process command
     
