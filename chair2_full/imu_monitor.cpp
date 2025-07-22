@@ -243,7 +243,7 @@ void scanForIMU() {
   
   // Reset flags
   deviceFound = false;
-  targetDevice = nullptr;
+    targetDevice = nullptr;
   
   bleConnecting = true;
   debugPrint("Scanning for IMU device with NimBLE...");
@@ -256,23 +256,13 @@ void scanForIMU() {
   pBLEScan->setWindow(449);
   pBLEScan->setActiveScan(true);
   
-  // Start scan 
-  bool scanStarted = pBLEScan->start(10, false); // Scan for 10 seconds
-  if (!scanStarted) {
-    debugPrint("Failed to start NimBLE scan");
-    bleConnecting = false;
-    return;
-  }
-  
-  // Wait for scan to complete
-  while (pBLEScan->isScanning()) {
-    delay(100);
-  }
-  
-  NimBLEScanResults foundDevices = pBLEScan->getResults();
+  // Start scan - this will block for 10 seconds or until device is found
+  bool scanStarted = pBLEScan->start(10, true); // Scan for 10 seconds
   
   // Scan completed
-  debugPrintf("Scan completed. Found %d devices total", foundDevices.getCount());
+  NimBLEScanResults foundDevices = pBLEScan->getResults();
+  debugPrintf("Scan completed. Started: %s, Found %d devices total", 
+              scanStarted ? "YES" : "NO", foundDevices.getCount());
   
   // Check if we found our target device
   if (deviceFound && targetDevice != nullptr) {
@@ -590,7 +580,7 @@ void printIMUData() {
                            sin(radians(imuData.roll)) * sin(radians(120)));  
   float dz3 = armRadius * (sin(radians(imuData.pitch)) * cos(radians(240)) + 
                            sin(radians(imuData.roll)) * sin(radians(240)));
-                          
+                           
   debugPrintf("Est. Actuator Δ (mm): A: %+6.1f  B: %+6.1f  C: %+6.1f", 
                 dz1, dz2, dz3);
   debugPrint("=====================================================\n");
