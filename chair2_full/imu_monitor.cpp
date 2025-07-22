@@ -257,7 +257,19 @@ void scanForIMU() {
   pBLEScan->setActiveScan(true);
   
   // Start scan 
-  NimBLEScanResults foundDevices = pBLEScan->getResults(10, false); // Scan for 10 seconds
+  bool scanStarted = pBLEScan->start(10, false); // Scan for 10 seconds
+  if (!scanStarted) {
+    debugPrint("Failed to start NimBLE scan");
+    bleConnecting = false;
+    return;
+  }
+  
+  // Wait for scan to complete
+  while (pBLEScan->isScanning()) {
+    delay(100);
+  }
+  
+  NimBLEScanResults foundDevices = pBLEScan->getResults();
   
   // Scan completed
   debugPrintf("Scan completed. Found %d devices total", foundDevices.getCount());
