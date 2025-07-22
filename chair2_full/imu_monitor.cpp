@@ -194,7 +194,15 @@ void loop() {
     
     // Show status if no packets received for a while
     if (bleConnected && pRemoteCharacteristic != nullptr && millis() - lastPacketTime > 5000 && packetCount == 0) {
-      debugPrint("No IMU packets received yet. Check IMU configuration and UUIDs.");
+      debugPrint("\n------------------------- STATUS -------------------------");
+      debugPrint("Connected, but no IMU data packets received yet.");
+      debugPrint("TROUBLESHOOTING:");
+      debugPrint(" 1. Check that the IMU is powered on and in range.");
+      debugPrint(" 2. Verify SERVICE_UUID and CHAR_UUID in the code match your IMU.");
+      debugPrint(" 3. Look at 'Characteristic Properties' log above.");
+      debugPrint("    - It MUST have 'NOTIFY' or 'INDICATE' property.");
+      debugPrint("    - If a start command is used, it MUST have 'WRITE' property.");
+      debugPrint("----------------------------------------------------------\n");
       lastPacketTime = millis(); // Prevent spam
     }
   } else {
@@ -316,6 +324,13 @@ bool connectToIMU() {
     }
     return false;
   }
+  
+  debugPrint(">>> Characteristic Properties Found <<<");
+  if (pRemoteCharacteristic->canRead())   { debugPrint("  - READ"); }
+  if (pRemoteCharacteristic->canWrite())  { debugPrint("  - WRITE"); }
+  if (pRemoteCharacteristic->canNotify()) { debugPrint("  - NOTIFY"); }
+  if (pRemoteCharacteristic->canIndicate()) { debugPrint("  - INDICATE"); }
+  debugPrint("------------------------------------");
   
   debugPrint("Found IMU characteristic, setting up notifications...");
   
