@@ -334,11 +334,11 @@ bool connectToIMU() {
     }
     
     // Try to send a command to start data transmission
-    debugPrint("Sending start command to IMU...");
-    uint8_t startCmd[] = {0xFF, 0xAA, 0x69, 0x88, 0xB5}; // Common WT901 start command
-    pRemoteCharacteristic->writeValue(startCmd, sizeof(startCmd));
+    // debugPrint("Sending start command to IMU...");
+    // uint8_t startCmd[] = {0xFF, 0xAA, 0x69, 0x88, 0xB5}; // Common WT901 start command
+    // pRemoteCharacteristic->writeValue(startCmd, sizeof(startCmd));
     
-    delay(100); // Give IMU time to process command
+    // delay(100); // Give IMU time to process command
     
     return true;
   } catch (std::exception& e) {
