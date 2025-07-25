@@ -47,6 +47,7 @@ float computeActuatorLength(float pitchDeg, float rollDeg, float angleDeg);
 void updateActuatorsSmoothly();
 float stepTowards(float current, float target, float maxStep);
 void driveMotor(float length, int dirPin, int pwmChannel);
+void resetActuator(int dirPin, int pwmChannel);
 
 // ===== Setup =====
 void setup() {
@@ -134,7 +135,7 @@ void onWebSocketEvent(uint8_t client, WStype_t type, uint8_t *payload, size_t le
         // Extract pitch and roll from nested structure
         float pitch = doc["motion"]["orientation"]["pitch"] | 0.0;
         float roll  = doc["motion"]["orientation"]["roll"]  | 0.0;
-        float yaw   = doc["motion"]["orientation"]["yaw"]   | 0.0;
+        float yaw   = doc["motion"]["orientation"]["ayaw"]   | 0.0;
         
         // Extract timestamp for reference
         unsigned long timestamp = doc["timestamp"] | 0;
@@ -225,4 +226,11 @@ void driveMotor(float length, int dirPin, int pwmChannel) {
   digitalWrite(dirPin, dir);
   ledcWrite(pwmChannel, abs(delta) > 0.5 ? 200 : 0);
   *last = length;
+}
+
+void resetActuator(int dirPin, int pwmChannel) {
+  digitalWrite(dirPin, LOW);
+  ledcWrite(pwmChannel, 200);
+  delay(5000);
+  ledcWrite(pwmChannel, 0);
 }
