@@ -11,6 +11,7 @@
 
 #include <Arduino.h>
 #include <cstdarg>  // For va_list, va_start, va_end
+#include "pin_definitions.h"
 
 // =============================================================================
 // UART CONFIGURATION
@@ -249,4 +250,29 @@ void setupPWM() {
   ledcAttachPin(MOTOR2_RPWM, MOTOR2_RPWM_CHANNEL);
   ledcAttachPin(MOTOR3_LPWM, MOTOR3_LPWM_CHANNEL);
   ledcAttachPin(MOTOR3_RPWM, MOTOR3_RPWM_CHANNEL);
+} 
+
+// =============================================================================
+// CURRENT SENSING FUNCTIONS IMPLEMENTATION
+// =============================================================================
+int readCurrentSense(int motor, bool isReverse) {
+  int pin = -1;
+  
+  // Select the appropriate current sense pin based on motor and direction
+  switch (motor) {
+    case 1:
+      pin = isReverse ? MOTOR1_L_IS : MOTOR1_R_IS;
+      break;
+    case 2:
+      pin = isReverse ? MOTOR2_L_IS : MOTOR2_R_IS;
+      break;
+    case 3:
+      pin = isReverse ? MOTOR3_L_IS : MOTOR3_R_IS;
+      break;
+    default:
+      return 0; // Invalid motor number
+  }
+  
+  // Read the analog value from the current sense pin
+  return analogRead(pin);
 } 

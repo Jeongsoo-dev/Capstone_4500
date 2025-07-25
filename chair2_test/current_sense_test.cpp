@@ -46,10 +46,18 @@ const unsigned long DURATION_DOWN = 20000; // 20 seconds
 void setup() {
   // Initialize the debug serial port
   setupDebugUART2();
+  
+  // Add immediate test output to verify UART2 is working
+  delay(1000); // Give UART2 time to initialize
+  debugPrint("=== UART2 TEST MESSAGE ===");
+  debugPrint("If you can see this, UART2 is working!");
 
   // Initialize all the GPIO pins and PWM settings
   initializePins();
+  debugPrint("Pins initialized");
+  
   setupPWM();
+  debugPrint("PWM setup complete");
 
   debugPrint("==========================================");
   debugPrint("  Motor Current Sense Test Initialized");
@@ -65,10 +73,20 @@ void setup() {
   setMotorSpeed(1, MOTOR_SPEED);
   setMotorSpeed(2, MOTOR_SPEED);
   setMotorSpeed(3, MOTOR_SPEED);
+  debugPrint("Motors started - moving UP");
 }
 
 void loop() {
   unsigned long currentMillis = millis();
+  
+  // Add periodic status output to verify loop is running
+  static unsigned long lastStatusTime = 0;
+  if (currentMillis - lastStatusTime >= 5000) { // Every 5 seconds
+    debugPrintf("Loop running - State: %s, Time in state: %lu ms", 
+                currentState == MOVING_UP ? "UP" : "DOWN", 
+                currentMillis - stateStartTime);
+    lastStatusTime = currentMillis;
+  }
 
   // --- State Machine Logic ---
   if (currentState == MOVING_UP) {
