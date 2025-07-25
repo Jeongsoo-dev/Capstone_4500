@@ -76,6 +76,29 @@ void setup() {
     Serial.println("[!] WiFi AP failed to start");
   }
 
+  // Move to lowest position and hold for 4 seconds
+  Serial.println("[*] Moving to lowest position...");
+  
+  // Set targets to minimum length (lowest position)
+  for (int i = 0; i < 3; i++) {
+    targetLength[i] = minLength;
+  }
+  
+  // Move actuators to lowest position for 4 seconds
+  unsigned long startTime = millis();
+  while (millis() - startTime < 4000) { // 4 seconds = 4000ms
+    updateActuatorsSmoothly();
+    delay(updateInterval); // Use same update interval as main loop
+  }
+  
+  // Stop all motors and reset to home position targets
+  stopAllMotors();
+  for (int i = 0; i < 3; i++) {
+    targetLength[i] = homeLength;
+  }
+  
+  Serial.println("[✓] Initialization complete - platform at lowest point");
+
   // Start WebSocket server
   webSocket.begin();
   webSocket.onEvent(onWebSocketEvent);

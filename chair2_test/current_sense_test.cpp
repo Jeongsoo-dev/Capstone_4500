@@ -47,17 +47,8 @@ void setup() {
   // Initialize the debug serial port
   setupDebugUART2();
   
-  // Wait for debugger ESP32 to send ready signal
-  Serial2.setTimeout(5000); // 5 second timeout
-  String readySignal = Serial2.readStringUntil('\n');
-  if (readySignal.indexOf("DEBUGGER_READY") >= 0) {
-    // Debugger is ready, proceed normally
-  } else {
-    // Fallback: wait 2 seconds if no ready signal received
-    delay(2000);
-  }
-  
   // Add immediate test output to verify UART2 is working
+  delay(1000); // Give UART2 time to initialize
   debugPrint("=== UART2 TEST MESSAGE ===");
   debugPrint("If you can see this, UART2 is working!");
 
