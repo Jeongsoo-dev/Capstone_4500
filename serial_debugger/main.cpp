@@ -57,12 +57,16 @@ void setup() {
   Serial.println("========================================\n");
   
   // Blink LED to indicate ready
-  for (int i = 0; i < 6; i++) {
+  for (int i = 0; i < 2; i++) {  // Reduced from 6 to 2 blinks for faster startup
     digitalWrite(LED_PIN, HIGH);
     delay(100);
     digitalWrite(LED_PIN, LOW);
     delay(100);
   }
+  
+  // Send ready signal to target ESP32
+  Serial2.println("DEBUGGER_READY");
+  Serial.println("Ready signal sent to target ESP32");
 }
 
 void loop() {

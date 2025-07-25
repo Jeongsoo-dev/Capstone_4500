@@ -235,98 +235,21 @@ void initializePins() {
 }
 
 void setupPWM() {
-  // Setup PWM channels for all motors with detailed debugging
-  
-  if (ENABLE_DEBUG_UART2) {
-    Serial2.println("[PWM] Starting PWM channel setup...");
-    delay(50);
-  }
-  
-  // Motor 1 PWM setup
-  if (ENABLE_DEBUG_UART2) {
-    Serial2.println("[PWM] Setting up Motor 1 LPWM channel...");
-    delay(20);
-  }
+  // Setup PWM channels for all motors
   ledcSetup(MOTOR1_LPWM_CHANNEL, PWM_FREQUENCY, PWM_RESOLUTION);
-  
-  if (ENABLE_DEBUG_UART2) {
-    Serial2.println("[PWM] Setting up Motor 1 RPWM channel...");
-    delay(20);
-  }
   ledcSetup(MOTOR1_RPWM_CHANNEL, PWM_FREQUENCY, PWM_RESOLUTION);
-  
-  // Motor 2 PWM setup
-  if (ENABLE_DEBUG_UART2) {
-    Serial2.println("[PWM] Setting up Motor 2 LPWM channel...");
-    delay(20);
-  }
   ledcSetup(MOTOR2_LPWM_CHANNEL, PWM_FREQUENCY, PWM_RESOLUTION);
-  
-  if (ENABLE_DEBUG_UART2) {
-    Serial2.println("[PWM] Setting up Motor 2 RPWM channel...");
-    delay(20);
-  }
   ledcSetup(MOTOR2_RPWM_CHANNEL, PWM_FREQUENCY, PWM_RESOLUTION);
-  
-  // Motor 3 PWM setup
-  if (ENABLE_DEBUG_UART2) {
-    Serial2.println("[PWM] Setting up Motor 3 LPWM channel...");
-    delay(20);
-  }
   ledcSetup(MOTOR3_LPWM_CHANNEL, PWM_FREQUENCY, PWM_RESOLUTION);
-  
-  if (ENABLE_DEBUG_UART2) {
-    Serial2.println("[PWM] Setting up Motor 3 RPWM channel...");
-    delay(20);
-  }  
   ledcSetup(MOTOR3_RPWM_CHANNEL, PWM_FREQUENCY, PWM_RESOLUTION);
   
-  if (ENABLE_DEBUG_UART2) {
-    Serial2.println("[PWM] All PWM channels configured. Starting pin attachment...");
-    delay(50);
-  }
-  
   // Attach pins to PWM channels
-  if (ENABLE_DEBUG_UART2) {
-    Serial2.printf("[PWM] Attaching Motor 1 LPWM pin %d to channel %d...\n", MOTOR1_LPWM, MOTOR1_LPWM_CHANNEL);
-    delay(20);
-  }
   ledcAttachPin(MOTOR1_LPWM, MOTOR1_LPWM_CHANNEL);
-  
-  if (ENABLE_DEBUG_UART2) {
-    Serial2.printf("[PWM] Attaching Motor 1 RPWM pin %d to channel %d...\n", MOTOR1_RPWM, MOTOR1_RPWM_CHANNEL);
-    delay(20);
-  }
   ledcAttachPin(MOTOR1_RPWM, MOTOR1_RPWM_CHANNEL);
-  
-  if (ENABLE_DEBUG_UART2) {
-    Serial2.printf("[PWM] Attaching Motor 2 LPWM pin %d to channel %d...\n", MOTOR2_LPWM, MOTOR2_LPWM_CHANNEL);
-    delay(20);
-  }
   ledcAttachPin(MOTOR2_LPWM, MOTOR2_LPWM_CHANNEL);
-  
-  if (ENABLE_DEBUG_UART2) {
-    Serial2.printf("[PWM] Attaching Motor 2 RPWM pin %d to channel %d...\n", MOTOR2_RPWM, MOTOR2_RPWM_CHANNEL);
-    delay(20);
-  }
   ledcAttachPin(MOTOR2_RPWM, MOTOR2_RPWM_CHANNEL);
-  
-  if (ENABLE_DEBUG_UART2) {
-    Serial2.printf("[PWM] Attaching Motor 3 LPWM pin %d to channel %d...\n", MOTOR3_LPWM, MOTOR3_LPWM_CHANNEL);
-    delay(20);
-  }
   ledcAttachPin(MOTOR3_LPWM, MOTOR3_LPWM_CHANNEL);
-  
-  if (ENABLE_DEBUG_UART2) {
-    Serial2.printf("[PWM] Attaching Motor 3 RPWM pin %d to channel %d...\n", MOTOR3_RPWM, MOTOR3_RPWM_CHANNEL);
-    delay(20);
-  }
   ledcAttachPin(MOTOR3_RPWM, MOTOR3_RPWM_CHANNEL);
-  
-  if (ENABLE_DEBUG_UART2) {
-    Serial2.println("[PWM] PWM setup completed successfully!");
-    delay(50);
-  }
 } 
 
 // =============================================================================

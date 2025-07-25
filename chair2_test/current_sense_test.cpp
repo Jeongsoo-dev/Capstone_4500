@@ -47,26 +47,26 @@ void setup() {
   // Initialize the debug serial port
   setupDebugUART2();
   
+  // Wait for debugger ESP32 to send ready signal
+  Serial2.setTimeout(5000); // 5 second timeout
+  String readySignal = Serial2.readStringUntil('\n');
+  if (readySignal.indexOf("DEBUGGER_READY") >= 0) {
+    // Debugger is ready, proceed normally
+  } else {
+    // Fallback: wait 2 seconds if no ready signal received
+    delay(2000);
+  }
+  
   // Add immediate test output to verify UART2 is working
-  delay(1000); // Give UART2 time to initialize
   debugPrint("=== UART2 TEST MESSAGE ===");
   debugPrint("If you can see this, UART2 is working!");
 
-  // Add step-by-step debugging
-  debugPrint("Step 1: About to call initializePins()...");
-  delay(100); // Small delay to ensure message is sent
-  
   // Initialize all the GPIO pins and PWM settings
   initializePins();
-  debugPrint("Step 2: initializePins() completed successfully");
-  delay(100);
-  
-  debugPrint("Step 3: About to call setupPWM()...");
-  delay(100);
+  debugPrint("Pins initialized");
   
   setupPWM();
-  debugPrint("Step 4: setupPWM() completed successfully");
-  delay(100);
+  debugPrint("PWM setup complete");
 
   debugPrint("==========================================");
   debugPrint("  Motor Current Sense Test Initialized");
@@ -77,25 +77,12 @@ void setup() {
               
   debugPrint("Starting sequence: 10 seconds UP, then 20 seconds DOWN.");
   
-  debugPrint("Step 5: About to start motors...");
-  delay(100);
-  
   // Start the initial state (moving up)
   stateStartTime = millis();
   setMotorSpeed(1, MOTOR_SPEED);
-  debugPrint("Step 6: Motor 1 started");
-  delay(50);
-  
   setMotorSpeed(2, MOTOR_SPEED);
-  debugPrint("Step 7: Motor 2 started");
-  delay(50);
-  
   setMotorSpeed(3, MOTOR_SPEED);
-  debugPrint("Step 8: Motor 3 started");
-  delay(50);
-  
-  debugPrint("Step 9: All motors started - moving UP");
-  debugPrint("Setup completed successfully!");
+  debugPrint("Motors started - moving UP");
 }
 
 void loop() {
