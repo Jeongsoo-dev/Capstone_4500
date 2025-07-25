@@ -34,11 +34,6 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
   
-  // Configure UART pins before initializing Serial2
-  // Enable internal pull-up on RX pin to prevent floating pin issues
-  pinMode(UART_RX_PIN, INPUT_PULLUP);
-  pinMode(UART_TX_PIN, OUTPUT);
-  
   // Initialize USB Serial (connection to computer)
   Serial.begin(BAUD_RATE);
   while (!Serial) {
@@ -59,7 +54,6 @@ void setup() {
   Serial.printf("  GPIO%d (TX2) → Target RX\n", UART_TX_PIN);
   Serial.printf("  GPIO%d (RX2) → Target TX\n", UART_RX_PIN);
   Serial.println("  GND → GND");
-  Serial.println("Note: RX pin has internal pull-up to prevent floating pin noise");
   Serial.println("========================================\n");
   
   // Blink LED to indicate ready
