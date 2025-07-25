@@ -18,7 +18,7 @@ const int homeLength = 700;     // mm - neutral/level position
 const float armRadius = 200.0;  // mm - radius from center to actuator mount
 
 // -- Control Loop
-const float actuatorSpeed = 84.0; // mm/s - max actuator speed
+const float actuatorSpeed = 84.0; // mm/s - max actuator speed (which is the nature of the actuator, can't be faster)
 const int updateInterval = 10;  // ms - control loop interval (100 Hz)
 
 // -- Motion Cueing Factors
@@ -91,13 +91,24 @@ void setup() {
     delay(updateInterval); // Use same update interval as main loop
   }
   
-  // Stop all motors and reset to home position targets
-  stopAllMotors();
+  Serial.println("[*] Moving to home position...");
+  
+  // Set targets to home length and move there
   for (int i = 0; i < 3; i++) {
     targetLength[i] = homeLength;
   }
   
-  Serial.println("[✓] Initialization complete - platform at lowest point");
+  // Move actuators to home position for 3 seconds
+  startTime = millis();
+  while (millis() - startTime < 3000) { // 3 seconds = 3000ms
+    updateActuatorsSmoothly();
+    delay(updateInterval);
+  }
+  
+  // Stop all motors
+  stopAllMotors();
+  
+  Serial.println("[✓] Initialization complete - platform at home position");
 
   // Start WebSocket server
   webSocket.begin();
@@ -212,8 +223,9 @@ float computeActuatorLength(float pitchDeg, float rollDeg, float heave, float an
 // =============================================================================
 // Moves actuators towards their target lengths incrementally.
 void updateActuatorsSmoothly() {
-  // Calculate the maximum distance an actuator can move in one update interval
-  float maxStep = actuatorSpeed * (updateInterval / 1000.0);
+  // Use a more aggressive step size for faster movement
+  // Since actuatorSpeed is just the physical max speed, we use a fraction of it for control
+  float maxStep = (actuatorSpeed * 0.5) * (updateInterval / 1000.0); // Use 50% of max speed
   
   for (int i = 0; i < 3; i++) {
     // Calculate the next incremental position for the actuator
@@ -223,9 +235,9 @@ void updateActuatorsSmoothly() {
     // Determine the required motor speed and direction based on the change in length
     float delta = currentLength[i] - previousLength;
     
-    // Scale the change in length to a PWM value.
-    // A larger scaling factor results in more aggressive movement.
-    int speed = constrain(delta * 100, -255, 255); 
+    // Scale the change in length to a PWM value with much higher scaling factor
+    // Higher scaling factor = more aggressive/faster movement
+    int speed = constrain(delta * 500, -255, 255); 
     
     // Motors are numbered 1, 2, 3 in setMotorSpeed
     setMotorSpeed(i + 1, speed); 
