@@ -184,3 +184,69 @@ void debugPrintf(const char* format, ...) {
     Serial2.println(buffer);
   }
 } 
+
+// =============================================================================
+// MOTOR CONTROL FUNCTIONS IMPLEMENTATION
+// =============================================================================
+void setMotorSpeed(int motor, int speed) {
+  // speed: -255 (full reverse) to +255 (full forward)
+  int pwmValue = abs(speed);
+  bool direction = (speed >= 0); // true for forward (RPWM), false for reverse (LPWM)
+  
+  switch (motor) {
+    case 1: // Motor 1
+      ledcWrite(MOTOR1_LPWM_CHANNEL, direction ? 0 : pwmValue);
+      ledcWrite(MOTOR1_RPWM_CHANNEL, direction ? pwmValue : 0);
+      break;
+      
+    case 2: // Motor 2  
+      ledcWrite(MOTOR2_LPWM_CHANNEL, direction ? 0 : pwmValue);
+      ledcWrite(MOTOR2_RPWM_CHANNEL, direction ? pwmValue : 0);
+      break;
+      
+    case 3: // Motor 3
+      ledcWrite(MOTOR3_LPWM_CHANNEL, direction ? 0 : pwmValue);
+      ledcWrite(MOTOR3_RPWM_CHANNEL, direction ? pwmValue : 0);
+      break;
+  }
+}
+
+void stopAllMotors() {
+  for (int i = 1; i <= 3; i++) {
+    setMotorSpeed(i, 0);
+  }
+}
+
+// =============================================================================
+// PIN INITIALIZATION FUNCTIONS IMPLEMENTATION
+// =============================================================================
+void initializePins() {
+  // Set current sense pins as inputs
+  pinMode(MOTOR1_L_IS, INPUT);
+  pinMode(MOTOR1_R_IS, INPUT);
+  pinMode(MOTOR2_L_IS, INPUT);
+  pinMode(MOTOR2_R_IS, INPUT);
+  pinMode(MOTOR3_L_IS, INPUT);
+  pinMode(MOTOR3_R_IS, INPUT);
+  
+  // Analog read resolution
+  analogReadResolution(ADC_RESOLUTION);
+}
+
+void setupPWM() {
+  // Setup PWM channels for all motors
+  ledcSetup(MOTOR1_LPWM_CHANNEL, PWM_FREQUENCY, PWM_RESOLUTION);
+  ledcSetup(MOTOR1_RPWM_CHANNEL, PWM_FREQUENCY, PWM_RESOLUTION);
+  ledcSetup(MOTOR2_LPWM_CHANNEL, PWM_FREQUENCY, PWM_RESOLUTION);
+  ledcSetup(MOTOR2_RPWM_CHANNEL, PWM_FREQUENCY, PWM_RESOLUTION);
+  ledcSetup(MOTOR3_LPWM_CHANNEL, PWM_FREQUENCY, PWM_RESOLUTION);
+  ledcSetup(MOTOR3_RPWM_CHANNEL, PWM_FREQUENCY, PWM_RESOLUTION);
+  
+  // Attach pins to PWM channels
+  ledcAttachPin(MOTOR1_LPWM, MOTOR1_LPWM_CHANNEL);
+  ledcAttachPin(MOTOR1_RPWM, MOTOR1_RPWM_CHANNEL);
+  ledcAttachPin(MOTOR2_LPWM, MOTOR2_LPWM_CHANNEL);
+  ledcAttachPin(MOTOR2_RPWM, MOTOR2_RPWM_CHANNEL);
+  ledcAttachPin(MOTOR3_LPWM, MOTOR3_LPWM_CHANNEL);
+  ledcAttachPin(MOTOR3_RPWM, MOTOR3_RPWM_CHANNEL);
+} 

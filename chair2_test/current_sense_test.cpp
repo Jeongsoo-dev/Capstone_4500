@@ -30,31 +30,70 @@
 const unsigned long PRINT_INTERVAL = 500;
 unsigned long previousMillis = 0;
 
+// === State Machine for Motor Movement ===
+enum MotorState {
+  MOVING_UP,
+  MOVING_DOWN
+};
+MotorState currentState = MOVING_UP;
+unsigned long stateStartTime = 0;
+
+const int MOTOR_SPEED = 128; // Speed for motors (0-255)
+const unsigned long DURATION_UP = 10000; // 10 seconds
+const unsigned long DURATION_DOWN = 20000; // 20 seconds
+// =======================================
+
 void setup() {
-  // Initialize the Serial monitor for output
-  Serial.begin(115200);
-  while (!Serial) {
-    ; // wait for serial port to connect. Needed for native USB
-  }
+  // Initialize the debug serial port
+  setupDebugUART2();
 
   // Initialize all the GPIO pins and PWM settings
   initializePins();
   setupPWM();
 
-  // Optionally, set up the debug UART if you want to use it
-  // setupDebugUART2();
-
-  Serial.println("==========================================");
-  Serial.println("  Motor Current Sense Test Initialized");
-  Serial.println("==========================================");
-  Serial.println("Reading current sense values from all motors...");
-  Serial.println("Motor 1: L_IS(34), R_IS(35) | Motor 2: L_IS(32), R_IS(33) | Motor 3: L_IS(36), R_IS(39)");
+  debugPrint("==========================================");
+  debugPrint("  Motor Current Sense Test Initialized");
+  debugPrint("==========================================");
+  debugPrint("Reading current sense values from all motors...");
+  debugPrintf("Motor 1: L_IS(%d), R_IS(%d) | Motor 2: L_IS(%d), R_IS(%d) | Motor 3: L_IS(%d), R_IS(%d)",
+              MOTOR1_L_IS, MOTOR1_R_IS, MOTOR2_L_IS, MOTOR2_R_IS, MOTOR3_L_IS, MOTOR3_R_IS);
+              
+  debugPrint("Starting sequence: 10 seconds UP, then 20 seconds DOWN.");
+  
+  // Start the initial state (moving up)
+  stateStartTime = millis();
+  setMotorSpeed(1, MOTOR_SPEED);
+  setMotorSpeed(2, MOTOR_SPEED);
+  setMotorSpeed(3, MOTOR_SPEED);
 }
 
 void loop() {
   unsigned long currentMillis = millis();
 
-  // Check if it's time to print the sensor values again
+  // --- State Machine Logic ---
+  if (currentState == MOVING_UP) {
+    if (currentMillis - stateStartTime >= DURATION_UP) {
+      debugPrint("10s UP complete. Moving DOWN for 20s.");
+      currentState = MOVING_DOWN;
+      stateStartTime = currentMillis; // Reset timer for new state
+      // Set motors to move down
+      setMotorSpeed(1, -MOTOR_SPEED);
+      setMotorSpeed(2, -MOTOR_SPEED);
+      setMotorSpeed(3, -MOTOR_SPEED);
+    }
+  } else if (currentState == MOVING_DOWN) {
+    if (currentMillis - stateStartTime >= DURATION_DOWN) {
+      debugPrint("20s DOWN complete. Moving UP for 10s.");
+      currentState = MOVING_UP;
+      stateStartTime = currentMillis; // Reset timer for new state
+      // Set motors to move up
+      setMotorSpeed(1, MOTOR_SPEED);
+      setMotorSpeed(2, MOTOR_SPEED);
+      setMotorSpeed(3, MOTOR_SPEED);
+    }
+  }
+
+  // --- Current Sensing Logic (runs independently) ---
   if (currentMillis - previousMillis >= PRINT_INTERVAL) {
     previousMillis = currentMillis;
 
@@ -69,17 +108,10 @@ void loop() {
     int motor3_L_IS_val = readCurrentSense(3, true);
     int motor3_R_IS_val = readCurrentSense(3, false);
 
-    // Print the values to the Serial monitor in a formatted way
-    Serial.printf("M1 L:%-4d R:%-4d | M2 L:%-4d R:%-4d | M3 L:%-4d R:%-4d\n",
+    // Print the values to the debug UART
+    debugPrintf("M1 L:%-4d R:%-4d | M2 L:%-4d R:%-4d | M3 L:%-4d R:%-4d",
                   motor1_L_IS_val, motor1_R_IS_val,
                   motor2_L_IS_val, motor2_R_IS_val,
                   motor3_L_IS_val, motor3_R_IS_val);
   }
-
-  // You can add motor movement commands here to test current draw
-  // under load. For example, to run motor 1 forward at half speed:
-  // setMotorSpeed(1, 128);
-
-  // To stop all motors:
-  // stopAllMotors();
 } 
