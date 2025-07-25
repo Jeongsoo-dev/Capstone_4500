@@ -11,7 +11,6 @@
 
 #include <Arduino.h>
 #include <cstdarg>  // For va_list, va_start, va_end
-#include "pin_definitions.h"  // Include our header file
 
 // =============================================================================
 // UART CONFIGURATION
@@ -196,18 +195,18 @@ void setMotorSpeed(int motor, int speed) {
   
   switch (motor) {
     case 1: // Motor 1
-      ledcWrite(MOTOR1_RPWM_CHANNEL, direction ? pwmValue : 0);
       ledcWrite(MOTOR1_LPWM_CHANNEL, direction ? 0 : pwmValue);
+      ledcWrite(MOTOR1_RPWM_CHANNEL, direction ? pwmValue : 0);
       break;
       
     case 2: // Motor 2  
-      ledcWrite(MOTOR2_RPWM_CHANNEL, direction ? pwmValue : 0);
       ledcWrite(MOTOR2_LPWM_CHANNEL, direction ? 0 : pwmValue);
+      ledcWrite(MOTOR2_RPWM_CHANNEL, direction ? pwmValue : 0);
       break;
       
     case 3: // Motor 3
-      ledcWrite(MOTOR3_RPWM_CHANNEL, direction ? pwmValue : 0);
       ledcWrite(MOTOR3_LPWM_CHANNEL, direction ? 0 : pwmValue);
+      ledcWrite(MOTOR3_RPWM_CHANNEL, direction ? pwmValue : 0);
       break;
   }
 }
@@ -250,29 +249,4 @@ void setupPWM() {
   ledcAttachPin(MOTOR2_RPWM, MOTOR2_RPWM_CHANNEL);
   ledcAttachPin(MOTOR3_LPWM, MOTOR3_LPWM_CHANNEL);
   ledcAttachPin(MOTOR3_RPWM, MOTOR3_RPWM_CHANNEL);
-} 
-
-// =============================================================================
-// CURRENT SENSING FUNCTIONS IMPLEMENTATION
-// =============================================================================
-int readCurrentSense(int motor, bool isReverse) {
-  // Select the appropriate current sense pin based on motor number and direction
-  int pin;
-  switch (motor) {
-    case 1:
-      pin = isReverse ? MOTOR1_L_IS : MOTOR1_R_IS;
-      break;
-    case 2:
-      pin = isReverse ? MOTOR2_L_IS : MOTOR2_R_IS;
-      break;
-    case 3:
-      pin = isReverse ? MOTOR3_L_IS : MOTOR3_R_IS;
-      break;
-    default:
-      return 0; // Invalid motor number
-  }
-  
-  // Read the analog value from the selected pin
-  // ADC resolution is set to 12 bits (0-4095)
-  return analogRead(pin);
 } 

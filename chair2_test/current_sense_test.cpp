@@ -38,40 +38,18 @@ enum MotorState {
 MotorState currentState = MOVING_UP;
 unsigned long stateStartTime = 0;
 
-const int MOTOR_SPEED = 255; // Full speed for clear current readings
+const int MOTOR_SPEED = 128; // Speed for motors (0-255)
 const unsigned long DURATION_UP = 10000; // 10 seconds
 const unsigned long DURATION_DOWN = 20000; // 20 seconds
-
-// Disable the watchdog timer
-#include "soc/rtc_wdt.h"
-#include "esp_task_wdt.h"
-
-// Track previous positions to calculate delta
-float previousPosition = 0;
-const float POSITION_STEP = 1.0; // 1mm per update
 // =======================================
 
 void setup() {
-  // Disable watchdog timers
-  disableCore0WDT();
-  disableCore1WDT();
-  disableLoopWDT();
-  
-  delay(3000); // Give time for serial to initialize
-  
   // Initialize the debug serial port
   setupDebugUART2();
-  delay(1000);
-  debugPrint("Starting initialization...");
 
   // Initialize all the GPIO pins and PWM settings
   initializePins();
-  delay(100);
-  debugPrint("Pins initialized");
-  
   setupPWM();
-  delay(100);
-  debugPrint("PWM setup complete");
 
   debugPrint("==========================================");
   debugPrint("  Motor Current Sense Test Initialized");
@@ -84,13 +62,9 @@ void setup() {
   
   // Start the initial state (moving up)
   stateStartTime = millis();
-  // Set initial motor speeds
-  debugPrint("Setting initial motor speeds...");
-  for (int i = 1; i <= 3; i++) {
-    setMotorSpeed(i, MOTOR_SPEED);
-    delay(50); // Small delay between motor starts
-  }
-  debugPrint("Motors started moving UP");
+  setMotorSpeed(1, MOTOR_SPEED);
+  setMotorSpeed(2, MOTOR_SPEED);
+  setMotorSpeed(3, MOTOR_SPEED);
 }
 
 void loop() {
@@ -102,24 +76,20 @@ void loop() {
       debugPrint("10s UP complete. Moving DOWN for 20s.");
       currentState = MOVING_DOWN;
       stateStartTime = currentMillis; // Reset timer for new state
-      // Set motors to move down at full speed
-      for (int i = 1; i <= 3; i++) {
-        setMotorSpeed(i, -MOTOR_SPEED);
-        delay(50); // Small delay between motor direction changes
-      }
-      debugPrint("All motors now moving DOWN");
+      // Set motors to move down
+      setMotorSpeed(1, -MOTOR_SPEED);
+      setMotorSpeed(2, -MOTOR_SPEED);
+      setMotorSpeed(3, -MOTOR_SPEED);
     }
   } else if (currentState == MOVING_DOWN) {
     if (currentMillis - stateStartTime >= DURATION_DOWN) {
       debugPrint("20s DOWN complete. Moving UP for 10s.");
       currentState = MOVING_UP;
       stateStartTime = currentMillis; // Reset timer for new state
-      // Set motors to move up at full speed
-      for (int i = 1; i <= 3; i++) {
-        setMotorSpeed(i, MOTOR_SPEED);
-        delay(50); // Small delay between motor direction changes
-      }
-      debugPrint("All motors now moving UP");
+      // Set motors to move up
+      setMotorSpeed(1, MOTOR_SPEED);
+      setMotorSpeed(2, MOTOR_SPEED);
+      setMotorSpeed(3, MOTOR_SPEED);
     }
   }
 
@@ -138,14 +108,10 @@ void loop() {
     int motor3_L_IS_val = readCurrentSense(3, true);
     int motor3_R_IS_val = readCurrentSense(3, false);
 
-    // Print the values to the debug UART along with current state and uptime
-    debugPrintf("Uptime: %lus | State: %s | M1 L:%-4d R:%-4d | M2 L:%-4d R:%-4d | M3 L:%-4d R:%-4d",
-                  currentMillis/1000,
-                  currentState == MOVING_UP ? "UP  " : "DOWN",
+    // Print the values to the debug UART
+    debugPrintf("M1 L:%-4d R:%-4d | M2 L:%-4d R:%-4d | M3 L:%-4d R:%-4d",
                   motor1_L_IS_val, motor1_R_IS_val,
                   motor2_L_IS_val, motor2_R_IS_val,
                   motor3_L_IS_val, motor3_R_IS_val);
   }
-  
-  delay(10); // Small delay to prevent watchdog issues
 } 
