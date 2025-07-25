@@ -11,6 +11,7 @@
 
 #include <Arduino.h>
 #include <cstdarg>  // For va_list, va_start, va_end
+#include "pin_definitions.h"  // Include our header file
 
 // =============================================================================
 // UART CONFIGURATION
