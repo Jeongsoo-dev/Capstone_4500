@@ -52,12 +52,21 @@ void setup() {
   debugPrint("=== UART2 TEST MESSAGE ===");
   debugPrint("If you can see this, UART2 is working!");
 
+  // Add step-by-step debugging
+  debugPrint("Step 1: About to call initializePins()...");
+  delay(100); // Small delay to ensure message is sent
+  
   // Initialize all the GPIO pins and PWM settings
   initializePins();
-  debugPrint("Pins initialized");
+  debugPrint("Step 2: initializePins() completed successfully");
+  delay(100);
+  
+  debugPrint("Step 3: About to call setupPWM()...");
+  delay(100);
   
   setupPWM();
-  debugPrint("PWM setup complete");
+  debugPrint("Step 4: setupPWM() completed successfully");
+  delay(100);
 
   debugPrint("==========================================");
   debugPrint("  Motor Current Sense Test Initialized");
@@ -68,12 +77,25 @@ void setup() {
               
   debugPrint("Starting sequence: 10 seconds UP, then 20 seconds DOWN.");
   
+  debugPrint("Step 5: About to start motors...");
+  delay(100);
+  
   // Start the initial state (moving up)
   stateStartTime = millis();
   setMotorSpeed(1, MOTOR_SPEED);
+  debugPrint("Step 6: Motor 1 started");
+  delay(50);
+  
   setMotorSpeed(2, MOTOR_SPEED);
+  debugPrint("Step 7: Motor 2 started");
+  delay(50);
+  
   setMotorSpeed(3, MOTOR_SPEED);
-  debugPrint("Motors started - moving UP");
+  debugPrint("Step 8: Motor 3 started");
+  delay(50);
+  
+  debugPrint("Step 9: All motors started - moving UP");
+  debugPrint("Setup completed successfully!");
 }
 
 void loop() {
