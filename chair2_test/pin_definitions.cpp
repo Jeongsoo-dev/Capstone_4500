@@ -195,18 +195,18 @@ void setMotorSpeed(int motor, int speed) {
   
   switch (motor) {
     case 1: // Motor 1
-      ledcWrite(MOTOR1_LPWM_CHANNEL, direction ? 0 : pwmValue);
       ledcWrite(MOTOR1_RPWM_CHANNEL, direction ? pwmValue : 0);
+      ledcWrite(MOTOR1_LPWM_CHANNEL, direction ? 0 : pwmValue);
       break;
       
     case 2: // Motor 2  
-      ledcWrite(MOTOR2_LPWM_CHANNEL, direction ? 0 : pwmValue);
       ledcWrite(MOTOR2_RPWM_CHANNEL, direction ? pwmValue : 0);
+      ledcWrite(MOTOR2_LPWM_CHANNEL, direction ? 0 : pwmValue);
       break;
       
     case 3: // Motor 3
-      ledcWrite(MOTOR3_LPWM_CHANNEL, direction ? 0 : pwmValue);
       ledcWrite(MOTOR3_RPWM_CHANNEL, direction ? pwmValue : 0);
+      ledcWrite(MOTOR3_LPWM_CHANNEL, direction ? 0 : pwmValue);
       break;
   }
 }
