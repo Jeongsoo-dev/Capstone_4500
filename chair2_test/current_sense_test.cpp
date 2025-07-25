@@ -38,7 +38,7 @@ enum MotorState {
 MotorState currentState = MOVING_UP;
 unsigned long stateStartTime = 0;
 
-const int MOTOR_SPEED = 255; // Full speed for clear current readings
+const int MOTOR_SPEED = 80; // STARTING SLOW: Speed for motors (0-255)
 const unsigned long DURATION_UP = 10000; // 10 seconds
 const unsigned long DURATION_DOWN = 20000; // 20 seconds
 
@@ -81,16 +81,14 @@ void setup() {
               MOTOR1_L_IS, MOTOR1_R_IS, MOTOR2_L_IS, MOTOR2_R_IS, MOTOR3_L_IS, MOTOR3_R_IS);
               
   debugPrint("Starting sequence: 10 seconds UP, then 20 seconds DOWN.");
+  debugPrint("DIAGNOSTIC MODE: Starting with only ONE motor at REDUCED speed.");
   
   // Start the initial state (moving up)
   stateStartTime = millis();
-  // Set initial motor speeds
-  debugPrint("Setting initial motor speeds...");
-  for (int i = 1; i <= 3; i++) {
-    setMotorSpeed(i, MOTOR_SPEED);
-    delay(50); // Small delay between motor starts
-  }
-  debugPrint("Motors started moving UP");
+  // --- TESTING WITH ONLY MOTOR 1 ---
+  setMotorSpeed(1, MOTOR_SPEED); 
+  // setMotorSpeed(2, MOTOR_SPEED); // Disabled for testing
+  // setMotorSpeed(3, MOTOR_SPEED); // Disabled for testing
 }
 
 void loop() {
@@ -102,24 +100,22 @@ void loop() {
       debugPrint("10s UP complete. Moving DOWN for 20s.");
       currentState = MOVING_DOWN;
       stateStartTime = currentMillis; // Reset timer for new state
-      // Set motors to move down at full speed
-      for (int i = 1; i <= 3; i++) {
-        setMotorSpeed(i, -MOTOR_SPEED);
-        delay(50); // Small delay between motor direction changes
-      }
-      debugPrint("All motors now moving DOWN");
+      // Set motors to move down
+      // --- TESTING WITH ONLY MOTOR 1 ---
+      setMotorSpeed(1, -MOTOR_SPEED);
+      // setMotorSpeed(2, -MOTOR_SPEED); // Disabled for testing
+      // setMotorSpeed(3, -MOTOR_SPEED); // Disabled for testing
     }
   } else if (currentState == MOVING_DOWN) {
     if (currentMillis - stateStartTime >= DURATION_DOWN) {
       debugPrint("20s DOWN complete. Moving UP for 10s.");
       currentState = MOVING_UP;
       stateStartTime = currentMillis; // Reset timer for new state
-      // Set motors to move up at full speed
-      for (int i = 1; i <= 3; i++) {
-        setMotorSpeed(i, MOTOR_SPEED);
-        delay(50); // Small delay between motor direction changes
-      }
-      debugPrint("All motors now moving UP");
+      // Set motors to move up
+      // --- TESTING WITH ONLY MOTOR 1 ---
+      setMotorSpeed(1, MOTOR_SPEED);
+      // setMotorSpeed(2, MOTOR_SPEED); // Disabled for testing
+      // setMotorSpeed(3, MOTOR_SPEED); // Disabled for testing
     }
   }
 
