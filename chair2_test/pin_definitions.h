@@ -55,14 +55,14 @@ extern const float CURRENT_SENSE_RATIO;
 // DEBUG CONFIGURATION
 // =============================================================================
 extern const int DEBUG_BAUD_RATE;
-extern const bool ENABLE_DEBUG_UART2;
+extern const bool ENABLE_DEBUG_UART0;
 
 // =============================================================================
 // FUNCTION DECLARATIONS
 // =============================================================================
 void initializePins();
 void setupPWM();
-void setupDebugUART2();
+void setupDebugUART0();
 void setMotorSpeed(int motor, int speed);
 int readCurrentSense(int motor, bool isReverse);
 void stopAllMotors();

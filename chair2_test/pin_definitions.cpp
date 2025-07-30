@@ -6,7 +6,7 @@
  * - ESP32 receives data via Bluetooth 5.0
  * - 3x BTS7960 motor drivers for linear actuators
  * - E and F pins on drivers are shorted (always enabled)
- * - UART2 available for debugging on GPIO16/17
+ * - UART0 (Serial) used for debugging output
  */
 
 #include <Arduino.h>
@@ -91,19 +91,19 @@ const float CURRENT_SENSE_RATIO = 1.0; // Adjust based on BTS7960 datasheet
 // =============================================================================
 // DEBUG CONFIGURATION
 // =============================================================================
-const int DEBUG_BAUD_RATE = 115200;  // UART2 baud rate for debugging
-const bool ENABLE_DEBUG_UART2 = true; // Enable/disable UART2 debugging
+const int DEBUG_BAUD_RATE = 115200;  // UART0 baud rate for debugging
+const bool ENABLE_DEBUG_UART0 = true; // Enable/disable UART0 debugging
 
 // =============================================================================
 // FUNCTION DECLARATIONS
 // =============================================================================
 void initializePins();
 void setupPWM();
-void setupDebugUART2();
+void setupDebugUART0();
 void setMotorSpeed(int motor, int speed); // speed: -255 to +255
 int readCurrentSense(int motor, bool isReverse);
 void stopAllMotors();
-void debugPrint(String message); // Helper function for UART2 debugging
+void debugPrint(String message); // Helper function for UART0 debugging
 void debugPrintf(const char* format, ...); // Printf-style debugging
 
 // =============================================================================
@@ -149,40 +149,38 @@ void debugPrintf(const char* format, ...); // Printf-style debugging
  * - 4 (M-) -> Linear Actuator Negative
  * 
  * UART CONNECTIONS:
- * - USB UART: Built-in via USB cable (GPIO1 TX, GPIO3 RX) - Main debugging
- * - UART2: GPIO17 (TX), GPIO16 (RX) - Additional debugging interface
- *   Connect to USB-Serial adapter for secondary debugging output
+ * - USB UART: Built-in via USB cable (GPIO1 TX, GPIO3 RX) - Debug output
  */ 
 
 // =============================================================================
-// UART2 DEBUG FUNCTIONS IMPLEMENTATION
+// UART0 DEBUG FUNCTIONS IMPLEMENTATION
 // =============================================================================
-void setupDebugUART2() {
-  if (ENABLE_DEBUG_UART2) {
-    Serial2.begin(DEBUG_BAUD_RATE, SERIAL_8N1, UART2_RX_PIN, UART2_TX_PIN);
-    Serial2.println("\n==== UART2 Debug Interface Started ====");
-    Serial2.printf("Debug UART2 initialized on GPIO%d (RX) / GPIO%d (TX)\n", 
-                   UART2_RX_PIN, UART2_TX_PIN);
-    Serial2.println("Available for detailed IMU/motor debugging");
-    Serial2.println("==========================================");
+void setupDebugUART0() {
+  if (ENABLE_DEBUG_UART0) {
+    Serial.begin(DEBUG_BAUD_RATE);
+    delay(100); // Allow Serial to initialize
+    Serial.println("\n==== UART0 Debug Interface Started ====");
+    Serial.printf("Debug UART0 initialized at %d baud\n", DEBUG_BAUD_RATE);
+    Serial.println("Available for IMU and motor debugging");
+    Serial.println("==========================================");
   }
 }
 
 void debugPrint(String message) {
-  if (ENABLE_DEBUG_UART2) {
-    Serial2.println("[DEBUG] " + message);
+  if (ENABLE_DEBUG_UART0) {
+    Serial.println("[DEBUG] " + message);
   }
 }
 
 void debugPrintf(const char* format, ...) {
-  if (ENABLE_DEBUG_UART2) {
+  if (ENABLE_DEBUG_UART0) {
     char buffer[256];
     va_list args;
     va_start(args, format);
     vsnprintf(buffer, sizeof(buffer), format, args);
     va_end(args);
-    Serial2.print("[DEBUG] ");
-    Serial2.println(buffer);
+    Serial.print("[DEBUG] ");
+    Serial.println(buffer);
   }
 } 
 

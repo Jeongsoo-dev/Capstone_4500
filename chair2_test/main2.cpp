@@ -55,29 +55,27 @@ float stepTowards(float current, float target, float maxStep);
 // SETUP
 // =============================================================================
 void setup() {
-  Serial.begin(115200);
+  setupDebugUART0();
   delay(1000);
-  Serial.println("\n==== Stewart Platform Playback Firmware (main2.cpp) ====");
+  debugPrint("\n==== Stewart Platform Playback Firmware (main2.cpp) ====");
 
   // Initialize motor drivers and PWM from pin_definitions.cpp
   initializePins();
   setupPWM();
   stopAllMotors();
-  Serial.println("[✓] Motor drivers initialized");
+  debugPrint("[✓] Motor drivers initialized");
 
   // Start Wi-Fi Access Point
   if (WiFi.softAP(ssid, password)) {
-    Serial.println("[✓] WiFi AP started");
-    Serial.print("    SSID: ");
-    Serial.println(ssid);
-    Serial.print("    IP: ");
-    Serial.println(WiFi.softAPIP());
+    debugPrint("[✓] WiFi AP started");
+    debugPrint("    SSID: " + String(ssid));
+    debugPrint("    IP: " + WiFi.softAPIP().toString());
   } else {
-    Serial.println("[!] WiFi AP failed to start");
+    debugPrint("[!] WiFi AP failed to start");
   }
 
   // Move to lowest position and hold for 4 seconds
-  Serial.println("[*] Moving to lowest position...");
+  debugPrint("[*] Moving to lowest position...");
   
   // Set targets to minimum length (lowest position)
   for (int i = 0; i < 3; i++) {
@@ -91,7 +89,7 @@ void setup() {
     delay(updateInterval); // Use same update interval as main loop
   }
   
-  Serial.println("[*] Moving to home position...");
+  debugPrint("[*] Moving to home position...");
   
   // Set targets to home length and move there
   for (int i = 0; i < 3; i++) {
@@ -108,13 +106,13 @@ void setup() {
   // Stop all motors
   stopAllMotors();
   
-  Serial.println("[✓] Initialization complete - platform at home position");
+  debugPrint("[✓] Initialization complete - platform at home position");
 
   // Start WebSocket server
   webSocket.begin();
   webSocket.onEvent(onWebSocketEvent);
-  Serial.println("[✓] WebSocket server running on port 81");
-  Serial.println("System ready. Waiting for Python client...");
+  debugPrint("[✓] WebSocket server running on port 81");
+  debugPrint("System ready. Waiting for Python client...");
 }
 
 // =============================================================================
@@ -136,12 +134,12 @@ void loop() {
 void onWebSocketEvent(uint8_t client, WStype_t type, uint8_t *payload, size_t length) {
   switch (type) {
     case WStype_DISCONNECTED:
-      Serial.printf("[WS] Client #%u disconnected\n", client);
+      debugPrintf("[WS] Client #%u disconnected", client);
       break;
       
     case WStype_CONNECTED: {
       IPAddress ip = webSocket.remoteIP(client);
-      Serial.printf("[WS] Client #%u connected from %d.%d.%d.%d\n", client, ip[0], ip[1], ip[2], ip[3]);
+      debugPrintf("[WS] Client #%u connected from %d.%d.%d.%d", client, ip[0], ip[1], ip[2], ip[3]);
       webSocket.sendTXT(client, "{\"status\":\"connected\",\"message\":\"Stewart Platform Playback Ready\"}");
       break;
     }
@@ -151,7 +149,7 @@ void onWebSocketEvent(uint8_t client, WStype_t type, uint8_t *payload, size_t le
       DeserializationError error = deserializeJson(doc, payload);
 
       if (error) {
-        Serial.printf("[WS] JSON parse error: %s\n", error.c_str());
+        debugPrintf("[WS] JSON parse error: %s", error.c_str());
         webSocket.sendTXT(client, "{\"status\":\"error\",\"message\":\"Invalid JSON\"}");
         return;
       }
@@ -187,7 +185,7 @@ void onWebSocketEvent(uint8_t client, WStype_t type, uint8_t *payload, size_t le
       }
       
       // Optional: Log received data to serial for debugging
-      // Serial.printf("P:%.1f R:%.1f | H:%.1f | T:%.1f,%.1f,%.1f\n", pitch, roll, heave_offset, targetLength[0], targetLength[1], targetLength[2]);
+      // debugPrintf("P:%.1f R:%.1f | H:%.1f | T:%.1f,%.1f,%.1f", pitch, roll, heave_offset, targetLength[0], targetLength[1], targetLength[2]);
 
       // Acknowledge receipt (optional, can be disabled for performance)
       // webSocket.sendTXT(client, "{\"status\":\"ok\"}");

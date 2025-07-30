@@ -44,13 +44,13 @@ const unsigned long DURATION_DOWN = 20000; // 20 seconds
 // =======================================
 
 void setup() {
-  // Initialize the debug serial port
-  setupDebugUART2();
+  // Initialize the debug interface (Serial UART0)
+  setupDebugUART0();
   
-  // Add immediate test output to verify UART2 is working
-  delay(1000); // Give UART2 time to initialize
-  debugPrint("=== UART2 TEST MESSAGE ===");
-  debugPrint("If you can see this, UART2 is working!");
+  // Add immediate test output to verify UART0 is working
+  delay(1000); // Give UART0 time to initialize
+  debugPrint("=== UART0 TEST MESSAGE ===");
+  debugPrint("If you can see this, UART0 is working!");
 
   // Initialize all the GPIO pins and PWM settings
   initializePins();

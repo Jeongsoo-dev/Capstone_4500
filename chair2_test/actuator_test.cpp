@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include "pin_definitions.h"
 
 // ===== Pins =====
 #define PWM_PIN 12
@@ -11,15 +12,15 @@ const float strokeLength = 300.0; // mm
 const int pwmDuty = 200;          // out of 255
 
 void setup() {
-  Serial.begin(115200);
+  setupDebugUART0();
   delay(1000);
-  Serial.println("\n[BOOT] ESP32 Actuator Test Starting");
+  debugPrint("\n[BOOT] ESP32 Actuator Test Starting");
 
   pinMode(DIR_PIN, OUTPUT);
   ledcSetup(PWM_CHANNEL, 20000, 8); 
   ledcAttachPin(PWM_PIN, PWM_CHANNEL);
 
-  Serial.println("[✓] PWM and DIR initialized");
+  debugPrint("[✓] PWM and DIR initialized");
 }
 
 void moveActuator(float distanceMM, bool direction) {
@@ -27,11 +28,11 @@ void moveActuator(float distanceMM, bool direction) {
   digitalWrite(DIR_PIN, direction ? HIGH : LOW);
   ledcWrite(PWM_CHANNEL, pwmDuty);
 
-  Serial.printf("Moving %.0f mm %s for %.2f seconds\n", distanceMM, direction ? "↑" : "↓", durationSeconds);
+  debugPrintf("Moving %.0f mm %s for %.2f seconds", distanceMM, direction ? "↑" : "↓", durationSeconds);
   delay((int)(durationSeconds * 1000));
 
   ledcWrite(PWM_CHANNEL, 0);
-  Serial.println("✓ Movement complete");
+  debugPrint("✓ Movement complete");
 }
 
 void loop() {

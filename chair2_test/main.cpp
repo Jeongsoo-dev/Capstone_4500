@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <ArduinoJson.h>
 #include <WebSocketsServer.h>
+#include "pin_definitions.h"
 
 // ===== Wi-Fi credentials =====
 const char* ssid = "StewartPlatform";
@@ -51,15 +52,15 @@ void resetActuator(int dirPin, int pwmChannel);
 
 // ===== Setup =====
 void setup() {
-  Serial.begin(115200);
+  setupDebugUART0();
   delay(1000);
-  Serial.println("\n==== ESP32 Stewart Platform Booting ====");
+  debugPrint("\n==== ESP32 Stewart Platform Booting ====");
 
   // Motor direction pins
   pinMode(DIR_A, OUTPUT);
   pinMode(DIR_B, OUTPUT);
   pinMode(DIR_C, OUTPUT);
-  Serial.println("[✓] Motor DIR pins set");
+  debugPrint("[✓] Motor DIR pins set");
 
   // PWM setup
   ledcSetup(CH_A, 20000, 8);
@@ -68,21 +69,20 @@ void setup() {
   ledcAttachPin(PWM_A, CH_A);
   ledcAttachPin(PWM_B, CH_B);
   ledcAttachPin(PWM_C, CH_C);
-  Serial.println("[✓] PWM configured (20kHz)");
+  debugPrint("[✓] PWM configured (20kHz)");
 
   // Start Wi-Fi Access Point
   if (WiFi.softAP(ssid, password)) {
-    Serial.println("[✓] WiFi AP started");
-    Serial.print("    IP: ");
-    Serial.println(WiFi.softAPIP());
+    debugPrint("[✓] WiFi AP started");
+    debugPrint("    IP: " + WiFi.softAPIP().toString());
   } else {
-    Serial.println("[!] WiFi AP failed to start");
+    debugPrint("[!] WiFi AP failed to start");
   }
 
   // Start WebSocket server
   webSocket.begin();
   webSocket.onEvent(onWebSocketEvent);
-  Serial.println("[✓] WebSocket server running on port 81");
+  debugPrint("[✓] WebSocket server running on port 81");
 }
 
 // ===== Main Loop =====
@@ -100,12 +100,12 @@ void loop() {
 void onWebSocketEvent(uint8_t client, WStype_t type, uint8_t *payload, size_t length) {
   switch (type) {
     case WStype_DISCONNECTED:
-      Serial.printf("[WS] Client #%u disconnected\n", client);
+      debugPrintf("[WS] Client #%u disconnected", client);
       break;
       
     case WStype_CONNECTED: {
       IPAddress ip = webSocket.remoteIP(client);
-      Serial.printf("[WS] Client #%u connected from %d.%d.%d.%d\n", 
+      debugPrintf("[WS] Client #%u connected from %d.%d.%d.%d", 
                     client, ip[0], ip[1], ip[2], ip[3]);
       
       // Send welcome message
@@ -116,18 +116,18 @@ void onWebSocketEvent(uint8_t client, WStype_t type, uint8_t *payload, size_t le
     case WStype_TEXT:
       // Validate message size
       if (length > 1024) {  // Reasonable limit for JSON payload
-        Serial.printf("[WS] Message too large (%u bytes), ignoring\n", length);
+        debugPrintf("[WS] Message too large (%u bytes), ignoring", length);
         webSocket.sendTXT(client, "{\"status\":\"error\",\"message\":\"Message too large\"}");
         return;
       }
       
-      Serial.printf("[WS] Received from client #%u: %s\n", client, payload);
+      debugPrintf("[WS] Received from client #%u: %s", client, payload);
       
       {
         StaticJsonDocument<512> doc;  // Increased size for larger JSON payload
         DeserializationError error = deserializeJson(doc, payload);
         if (error) {
-          Serial.printf("[WS] JSON parse error: %s\n", error.c_str());
+          debugPrintf("[WS] JSON parse error: %s", error.c_str());
           webSocket.sendTXT(client, "{\"status\":\"error\",\"message\":\"Invalid JSON\"}");
           return;
         }
@@ -144,9 +144,9 @@ void onWebSocketEvent(uint8_t client, WStype_t type, uint8_t *payload, size_t le
         const char* mode = doc["control"]["mode"] | "realtime";
         const char* speed = doc["control"]["response_speed"] | "fast";
 
-        Serial.printf("[WS] timestamp: %lu, pitch: %.2f°, roll: %.2f°, yaw: %.2f°\n", 
+        debugPrintf("[WS] timestamp: %lu, pitch: %.2f°, roll: %.2f°, yaw: %.2f°", 
                       timestamp, pitch, roll, yaw);
-        Serial.printf("[WS] mode: %s, speed: %s\n", mode, speed);
+        debugPrintf("[WS] mode: %s, speed: %s", mode, speed);
 
         // Use pitch and roll for actuator control (keeping existing logic)
         targetLengthA = computeActuatorLength(pitch, roll, 0);
@@ -159,22 +159,22 @@ void onWebSocketEvent(uint8_t client, WStype_t type, uint8_t *payload, size_t le
       break;
       
     case WStype_BIN:
-      Serial.printf("[WS] Binary data received (%u bytes), ignoring\n", length);
+      debugPrintf("[WS] Binary data received (%u bytes), ignoring", length);
       break;
       
     case WStype_ERROR:
-      Serial.printf("[WS] Error occurred with client #%u\n", client);
+      debugPrintf("[WS] Error occurred with client #%u", client);
       break;
       
     case WStype_FRAGMENT_TEXT_START:
     case WStype_FRAGMENT_BIN_START:
     case WStype_FRAGMENT:
     case WStype_FRAGMENT_FIN:
-      Serial.printf("[WS] Fragmented message received, ignoring\n");
+      debugPrint("[WS] Fragmented message received, ignoring");
       break;
       
     default:
-      Serial.printf("[WS] Unknown WebSocket event type: %d\n", type);
+      debugPrintf("[WS] Unknown WebSocket event type: %d", type);
       break;
   }
 }
