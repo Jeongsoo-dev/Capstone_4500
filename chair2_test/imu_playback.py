@@ -6,11 +6,35 @@ import json
 import time
 import pandas as pd
 import sys
+import re
+from datetime import datetime
 
 # Configuration
 WEBSOCKET_URI = "ws://192.168.4.1:81"
 DATA_FILE = "playback_data/20250723005056.txt"
 G_TO_MS2 = 9.80665 # Standard gravity to m/s^2
+PLAYBACK_SPEED_MULTIPLIER = 1.0  # 1.0 = real-time, 0.5 = half speed, 2.0 = double speed
+
+def normalize_timestamp(timestamp_str):
+    """Normalize timestamps to ensure consistent millisecond formatting."""
+    # Use regex to find and normalize the timestamp format
+    pattern = r'(\d{4}-\d{1,2}-\d{1,2} \d{1,2}:\d{2}:\d{2})\.(\d+)'
+    match = re.match(pattern, timestamp_str)
+    
+    if match:
+        date_time_part = match.group(1)
+        milliseconds = match.group(2)
+        
+        # Pad or truncate milliseconds to exactly 3 digits
+        if len(milliseconds) < 3:
+            milliseconds = milliseconds.ljust(3, '0')
+        elif len(milliseconds) > 3:
+            milliseconds = milliseconds[:3]
+            
+        return f"{date_time_part}.{milliseconds}"
+    else:
+        # Fallback: if no milliseconds, add .000
+        return f"{timestamp_str}.000"
 
 def load_imu_data(filepath):
     """Loads IMU data from a tab-separated file into a pandas DataFrame."""
@@ -33,6 +57,10 @@ def load_imu_data(filepath):
             'time': 'timestamp'
         }, inplace=True)
         
+        # Normalize timestamps before parsing
+        print("Normalizing timestamps...")
+        df['timestamp'] = df['timestamp'].apply(normalize_timestamp)
+        
         # Convert timestamps to datetime objects to calculate delays
         df['timestamp'] = pd.to_datetime(df['timestamp'], format='%Y-%m-%d %H:%M:%S.%f')
         
@@ -41,6 +69,9 @@ def load_imu_data(filepath):
             df[f'acc_{axis}'] = df[f'acc_{axis}'] * G_TO_MS2
             
         print("Data processed and ready for playback.")
+        print(f"Playback speed: {PLAYBACK_SPEED_MULTIPLIER}x")
+        if PLAYBACK_SPEED_MULTIPLIER != 1.0:
+            print(f"(Original timing will be {'slowed down' if PLAYBACK_SPEED_MULTIPLIER < 1.0 else 'sped up'} by factor of {PLAYBACK_SPEED_MULTIPLIER})")
         return df
     except FileNotFoundError:
         print(f"Error: Data file not found at '{filepath}'")
@@ -71,8 +102,10 @@ async def imu_playback(data):
             for index, row in data.iterrows():
                 # Calculate delay since last packet to simulate real-time playback
                 if last_timestamp:
-                    delay = (row['timestamp'] - last_timestamp).total_seconds()
-                    await asyncio.sleep(max(0, delay))
+                    original_delay = (row['timestamp'] - last_timestamp).total_seconds()
+                    # Apply speed multiplier (smaller multiplier = slower playback)
+                    adjusted_delay = original_delay / PLAYBACK_SPEED_MULTIPLIER
+                    await asyncio.sleep(max(0, adjusted_delay))
                 
                 last_timestamp = row['timestamp']
 
@@ -129,6 +162,17 @@ if __name__ == "__main__":
         print("Error: pandas library not found.")
         print("Please install it using: pip install pandas")
         sys.exit(1)
+        
+    # Allow command line argument for playback speed
+    if len(sys.argv) > 1:
+        try:
+            PLAYBACK_SPEED_MULTIPLIER = float(sys.argv[1])
+            if PLAYBACK_SPEED_MULTIPLIER <= 0:
+                print("Error: Playback speed must be greater than 0")
+                sys.exit(1)
+        except ValueError:
+            print("Error: Invalid playback speed. Please provide a number (e.g., 0.5 for half speed, 2.0 for double speed)")
+            sys.exit(1)
         
     imu_dataframe = load_imu_data(DATA_FILE)
     asyncio.run(imu_playback(imu_dataframe))

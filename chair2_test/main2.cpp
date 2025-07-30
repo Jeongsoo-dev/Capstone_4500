@@ -17,8 +17,10 @@ const int maxLength = 850;      // mm - maximum actuator length
 const int homeLength = 700;     // mm - neutral/level position
 const float armRadius = 200.0;  // mm - radius from center to actuator mount
 
-// -- Control Loop
-const float actuatorSpeed = 84.0; // mm/s - max actuator speed (which is the nature of the actuator, can't be faster)
+// -- Control Loop  
+// VERIFIED: actuatorSpeed = 84.0 mm/s corresponds to 100% duty cycle (PWM 255)
+// This means: PWM = (desired_speed_mm_per_sec / 84.0) * 255
+const float actuatorSpeed = 84.0; // mm/s - max actuator speed at 100% duty cycle
 const int updateInterval = 10;  // ms - control loop interval (100 Hz)
 
 // -- Motion Cueing Factors
@@ -74,39 +76,76 @@ void setup() {
     debugPrint("[!] WiFi AP failed to start");
   }
 
-  // Move to lowest position and hold for 4 seconds
-  debugPrint("[*] Moving to lowest position...");
+  // STEP 1: Move actuators down to shortest position (time-based)
+  debugPrint("[*] Moving actuators down to shortest position (4 seconds at full speed)...");
   
-  // Set targets to minimum length (lowest position)
-  for (int i = 0; i < 3; i++) {
-    targetLength[i] = minLength;
+  // Move all actuators down at full speed for reliable initialization
+  // Use 100% of max speed: 84 mm/s = PWM 255
+  const int moveDownSpeed = -255; // Negative for downward movement (100% of max speed)
+  
+  // Move down for 4 seconds at full speed
+  unsigned long moveStartTime = millis();
+  while (millis() - moveStartTime < 4000) { // 4 seconds = 4000ms
+    for (int i = 1; i <= 3; i++) {
+      setMotorSpeed(i, moveDownSpeed); // -255 PWM = 100% speed downward
+    }
+    delay(updateInterval);
   }
   
-  // Move actuators to lowest position for 4 seconds
-  unsigned long startTime = millis();
-  while (millis() - startTime < 4000) { // 4 seconds = 4000ms
-    updateActuatorsSmoothly();
-    delay(updateInterval); // Use same update interval as main loop
-  }
+  // Stop all motors
+  stopAllMotors();
+  debugPrint("[✓] All actuators at shortest position");
   
+  // STEP 2: Move actuators up to home position
   debugPrint("[*] Moving to home position...");
   
   // Set targets to home length and move there
   for (int i = 0; i < 3; i++) {
     targetLength[i] = homeLength;
+    currentLength[i] = minLength; // Set current position to minimum since we're at bottom
   }
   
-  // Move actuators to home position for 3 seconds
-  startTime = millis();
-  while (millis() - startTime < 3000) { // 3 seconds = 3000ms
+  // Move actuators to home position and wait until they actually reach it
+  const float positionTolerance = 5.0; // mm - how close to home position is "close enough"
+  const unsigned long maxHomeTime = 8000; // Max 8 seconds to reach home (safety)
+  unsigned long homeStartTime = millis();
+  bool allAtHome = false;
+  
+  while (!allAtHome && (millis() - homeStartTime < maxHomeTime)) {
     updateActuatorsSmoothly();
+    
+    // Check if all actuators are close enough to home position
+    bool actuator1AtHome = abs(currentLength[0] - homeLength) <= positionTolerance;
+    bool actuator2AtHome = abs(currentLength[1] - homeLength) <= positionTolerance;
+    bool actuator3AtHome = abs(currentLength[2] - homeLength) <= positionTolerance;
+    
+    if (actuator1AtHome && actuator2AtHome && actuator3AtHome) {
+      allAtHome = true;
+      debugPrintf("All actuators reached home position - Lengths: %.1f, %.1f, %.1f mm", 
+                  currentLength[0], currentLength[1], currentLength[2]);
+    }
+    
+    delay(updateInterval);
+  }
+  
+  if (!allAtHome) {
+    debugPrint("[!] Warning: Not all actuators reached home position within time limit");
+    debugPrintf("Current positions: %.1f, %.1f, %.1f mm (target: %.1f mm)", 
+                currentLength[0], currentLength[1], currentLength[2], homeLength);
+  }
+  
+  // Hold at home position for 1 second to ensure stability
+  debugPrint("[*] Stabilizing at home position...");
+  unsigned long stabilizeStartTime = millis();
+  while (millis() - stabilizeStartTime < 1000) { // 1 second
+    updateActuatorsSmoothly(); // Continue fine-tuning position
     delay(updateInterval);
   }
   
   // Stop all motors
   stopAllMotors();
   
-  debugPrint("[✓] Initialization complete - platform at home position");
+  debugPrint("[✓] Initialization complete - platform stable at home position");
 
   // Start WebSocket server
   webSocket.begin();
@@ -221,24 +260,44 @@ float computeActuatorLength(float pitchDeg, float rollDeg, float heave, float an
 // =============================================================================
 // Moves actuators towards their target lengths incrementally.
 void updateActuatorsSmoothly() {
-  // Use a more aggressive step size for faster movement
-  // Since actuatorSpeed is just the physical max speed, we use a fraction of it for control
-  float maxStep = (actuatorSpeed * 0.5) * (updateInterval / 1000.0); // Use 50% of max speed
-  
   for (int i = 0; i < 3; i++) {
-    // Calculate the next incremental position for the actuator
-    float previousLength = currentLength[i];
-    currentLength[i] = stepTowards(currentLength[i], targetLength[i], maxStep);
+    // Calculate required speed based on position error and maximum actuator speed
+    float positionError = targetLength[i] - currentLength[i];
     
-    // Determine the required motor speed and direction based on the change in length
-    float delta = currentLength[i] - previousLength;
+    // Calculate desired speed in mm/s based on position error
+    // Use proportional control: larger error = faster speed, up to actuatorSpeed limit
+    float maxAllowedSpeed = actuatorSpeed; // 84 mm/s at 100% duty cycle (PWM 255)
+    float desiredSpeed_mmPerSec;
     
-    // Scale the change in length to a PWM value with much higher scaling factor
-    // Higher scaling factor = more aggressive/faster movement
-    int speed = constrain(delta * 500, -255, 255); 
+    // Proportional control with saturation
+    const float proportionalGain = 8.0; // Adjust this for responsiveness vs stability
+    desiredSpeed_mmPerSec = positionError * proportionalGain;
+    
+    // Limit to maximum actuator speed
+    desiredSpeed_mmPerSec = constrain(desiredSpeed_mmPerSec, -maxAllowedSpeed, maxAllowedSpeed);
+    
+    // Convert desired speed (mm/s) to PWM value (0-255)
+    // Since actuatorSpeed (84 mm/s) corresponds to PWM 255 (100% duty cycle)
+    int pwmValue = (int)((abs(desiredSpeed_mmPerSec) / actuatorSpeed) * 255.0);
+    pwmValue = constrain(pwmValue, 0, 255);
+    
+    // Apply direction (positive = extend, negative = retract)
+    int motorSpeed = (desiredSpeed_mmPerSec >= 0) ? pwmValue : -pwmValue;
+    
+    // Update current position based on actual movement that will occur
+    // Calculate actual speed that will be achieved with this PWM
+    float actualSpeed_mmPerSec = (motorSpeed / 255.0) * actuatorSpeed;
+    float actualMovement_mm = actualSpeed_mmPerSec * (updateInterval / 1000.0);
+    currentLength[i] += actualMovement_mm;
+    
+    // Prevent overshoot - if we're very close, just set to target
+    if (abs(targetLength[i] - currentLength[i]) < 0.5) { // Within 0.5mm
+      currentLength[i] = targetLength[i];
+      motorSpeed = 0; // Stop motor when at target
+    }
     
     // Motors are numbered 1, 2, 3 in setMotorSpeed
-    setMotorSpeed(i + 1, speed); 
+    setMotorSpeed(i + 1, motorSpeed); 
   }
 }
 
