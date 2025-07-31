@@ -16,22 +16,30 @@ G_TO_MS2 = 9.80665 # Standard gravity to m/s^2
 PLAYBACK_SPEED_MULTIPLIER = 1.0  # 1.0 = real-time, 0.5 = half speed, 2.0 = double speed
 
 def normalize_timestamp(timestamp_str):
-    """Normalize timestamps to ensure consistent millisecond formatting."""
+    """Normalize timestamps to ensure consistent formatting."""
     # Use regex to find and normalize the timestamp format
-    pattern = r'(\d{4}-\d{1,2}-\d{1,2} \d{1,2}:\d{2}:\d{2})\.(\d+)'
+    pattern = r'(\d{4})-(\d{1,2})-(\d{1,2}) (\d{1,2}):(\d{2}):(\d{2})\.?(\d*)'
     match = re.match(pattern, timestamp_str)
     
     if match:
-        date_time_part = match.group(1)
-        milliseconds = match.group(2)
+        year, month, day, hour, minute, second, milliseconds = match.groups()
         
-        # Pad or truncate milliseconds to exactly 3 digits
-        if len(milliseconds) < 3:
-            milliseconds = milliseconds.ljust(3, '0')
-        elif len(milliseconds) > 3:
-            milliseconds = milliseconds[:3]
+        # Pad single digit month/day/hour with leading zeros
+        month = month.zfill(2)
+        day = day.zfill(2)
+        hour = hour.zfill(2)
+        
+        # Handle milliseconds
+        if milliseconds:
+            # Pad or truncate milliseconds to exactly 3 digits
+            if len(milliseconds) < 3:
+                milliseconds = milliseconds.ljust(3, '0')
+            elif len(milliseconds) > 3:
+                milliseconds = milliseconds[:3]
+        else:
+            milliseconds = '000'
             
-        return f"{date_time_part}.{milliseconds}"
+        return f"{year}-{month}-{day} {hour}:{minute}:{second}.{milliseconds}"
     else:
         # Fallback: if no milliseconds, add .000
         return f"{timestamp_str}.000"
@@ -62,7 +70,8 @@ def load_imu_data(filepath):
         df['timestamp'] = df['timestamp'].apply(normalize_timestamp)
         
         # Convert timestamps to datetime objects to calculate delays
-        df['timestamp'] = pd.to_datetime(df['timestamp'], format='%Y-%m-%d %H:%M:%S.%f')
+        # Use infer_datetime_format=True to handle variable date formats
+        df['timestamp'] = pd.to_datetime(df['timestamp'], infer_datetime_format=True)
         
         # Convert acceleration from g to m/s^2
         for axis in ['x', 'y', 'z']:
