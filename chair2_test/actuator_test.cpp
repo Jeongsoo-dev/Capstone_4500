@@ -21,6 +21,15 @@ void setup() {
   ledcAttachPin(PWM_PIN, PWM_CHANNEL);
 
   debugPrint("[✓] PWM and DIR initialized");
+  
+  // Move to neutral state during initialization
+  // For single actuator test, move to average neutral length
+  const float neutralLength = (670 + 735 + 735) / 3.0; // Average of l3, l1, l2
+  debugPrintf("[*] Moving to neutral state (%.0f mm from minimum)", neutralLength - 550);
+  
+  // Move from minimum (550mm) to neutral position
+  moveActuator(neutralLength - 550, true); // Move up to neutral
+  debugPrint("[✓] Actuator at neutral state");
 }
 
 void moveActuator(float distanceMM, bool direction) {

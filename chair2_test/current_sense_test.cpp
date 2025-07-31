@@ -66,6 +66,39 @@ void setup() {
   debugPrintf("Motor 1: L_IS(%d), R_IS(%d) | Motor 2: L_IS(%d), R_IS(%d) | Motor 3: L_IS(%d), R_IS(%d)",
               MOTOR1_L_IS, MOTOR1_R_IS, MOTOR2_L_IS, MOTOR2_R_IS, MOTOR3_L_IS, MOTOR3_R_IS);
               
+  // First move to neutral state during initialization
+  debugPrint("[*] Moving to neutral state...");
+  
+  // Move all actuators down to minimum position first (for reference)
+  debugPrint("Moving to minimum position for reference...");
+  setMotorSpeed(1, -255); // Full speed down
+  setMotorSpeed(2, -255);
+  setMotorSpeed(3, -255);
+  delay(4000); // 4 seconds at full speed to reach bottom
+  stopAllMotors();
+  
+  // Now move to neutral positions
+  // Motor 1 (Front Left) = l1 = 735mm -> move up 185mm from 550mm
+  // Motor 2 (Front Right) = l2 = 735mm -> move up 185mm from 550mm  
+  // Motor 3 (Rear) = l3 = 670mm -> move up 120mm from 550mm
+  debugPrint("Moving to neutral positions: Motor1&2=735mm, Motor3=670mm");
+  
+  // Calculate speeds for synchronized arrival (all reach neutral at same time)
+  // Motor 3 needs less movement (120mm vs 185mm), so slower speed
+  const float motor3_ratio = 120.0 / 185.0; // 0.649
+  const int motor12_speed = MOTOR_SPEED;
+  const int motor3_speed = (int)(MOTOR_SPEED * motor3_ratio);
+  
+  setMotorSpeed(1, motor12_speed);  // Move up 185mm
+  setMotorSpeed(2, motor12_speed);  // Move up 185mm
+  setMotorSpeed(3, motor3_speed);   // Move up 120mm (slower)
+  
+  // Wait for motors to reach neutral (time = distance / speed)
+  float time_to_neutral = 185.0 / (MOTOR_SPEED * 84.0 / 255.0); // seconds
+  delay((int)(time_to_neutral * 1000));
+  stopAllMotors();
+  
+  debugPrint("[✓] All actuators at neutral state");
   debugPrint("Starting sequence: 10 seconds UP, then 20 seconds DOWN.");
   
   // Start the initial state (moving up)

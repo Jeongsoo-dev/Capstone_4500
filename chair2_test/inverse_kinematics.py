@@ -3,7 +3,7 @@ from scipy.optimize import fsolve
 import warnings
 warnings.filterwarnings('ignore')
 
-def solve_inverse_kinematics(target_pitch, target_roll, a, b, target_height=0.7):
+def solve_inverse_kinematics(target_pitch, target_roll, a, b, target_height=0.67):
     """
     逆向运动学求解：给定目标俯仰角和滚转角，求解需要的伸缩杆长度
     
@@ -23,13 +23,17 @@ def solve_inverse_kinematics(target_pitch, target_roll, a, b, target_height=0.7)
     B = np.array([a*np.sqrt(3)/2, a/2, 0])
     C = np.array([a*np.sqrt(3)/2, -a/2, 0])
     
+    # 应用系统性pitch偏移校正 (0.529°转换为弧度)
+    pitch_offset = np.radians(0.529)
+    corrected_pitch = target_pitch + pitch_offset
+    
     # 根据目标姿态构建框架2的期望位置
     # 首先确定框架2的中心位置
     center_2_target = np.array([a*np.sqrt(3)/6, 0, target_height])  # 预估中心位置
     
     # 构建目标旋转矩阵
     # 使用ZYX欧拉角顺序：先绕Z轴旋转(yaw=0)，再绕Y轴旋转(pitch)，最后绕X轴旋转(roll)
-    cos_p, sin_p = np.cos(target_pitch), np.sin(target_pitch)
+    cos_p, sin_p = np.cos(corrected_pitch), np.sin(corrected_pitch)
     cos_r, sin_r = np.cos(target_roll), np.sin(target_roll)
     
     # 旋转矩阵 R = Rx(roll) * Ry(pitch) * Rz(0)
@@ -91,16 +95,16 @@ def solve_inverse_kinematics(target_pitch, target_roll, a, b, target_height=0.7)
         platform_center_z = (A_prime_actual[2] + A_prime_target[2] + A_prime_target[2]) / 3
         l3_vertex_z = l3
         midpoint_z = (platform_center_z + l3_vertex_z) / 2
-        eq4 = (midpoint_z - 0.7) * 1000  # 目标中点高度约束，转换为mm单位增加权重
+        eq4 = (midpoint_z - 0.67) * 1000  # 目标中点高度约束，转换为mm单位增加权重
         
         return [eq1, eq2, eq3, eq4]
     
-    # 多个初始猜测值
+    # 多个初始猜测值（基于用户测量的中性状态670mm）
     initial_guesses = [
         [target_height, target_height, target_height, target_height],
         [0.6, 0.6, 0.6, target_height],
         [0.8, 0.8, 0.8, target_height],
-        [0.7, 0.65, 0.75, target_height],
+        [0.67, 0.735, 0.735, target_height],  # 用户测量的中性状态
     ]
     
     best_solution = None
@@ -135,34 +139,28 @@ def solve_inverse_kinematics(target_pitch, target_roll, a, b, target_height=0.7)
 def simplified_inverse_kinematics(target_pitch, target_roll, a, b):
     """
     简化的逆向运动学求解方法
-    基于小角度近似和几何关系
+    基于用户测量的中性状态校准
     """
     
-    # 基础长度（对称情况下的长度）
-    base_length = 0.7  # 700mm
+    # 应用系统性pitch偏移校正 (0.529°转换为弧度)
+    pitch_offset = np.radians(0.529)
+    corrected_pitch = target_pitch + pitch_offset
     
-    # 框架几何参数
-    # 框架1顶点到中心的距离
-    r1 = a * 2/3  # A点到中心距离
-    r2 = a / 3    # B,C点到中心距离
+    # 用户测量的中性状态作为基准点
+    neutral_l3 = 0.670  # 670mm
+    neutral_l1 = 0.735  # 735mm
+    neutral_l2 = 0.735  # 735mm
     
-    # 框架2的几何
-    frame2_radius = b * 2/3
-    
-    # 小角度近似下的长度调整
-    # pitch影响A'点，roll影响B'和C'点的相对位置
-    
-    # 对于小角度，可以使用线性近似
-    pitch_effect = target_pitch * frame2_radius  # pitch对高度的影响
-    roll_effect = target_roll * frame2_radius    # roll对侧向的影响
+    # 基于实际测量数据的响应系数（需要通过校准确定）
+    # 这些系数基于小角度近似和用户的系统特性
+    pitch_sensitivity = 0.008  # m/rad，pitch对l3的影响
+    roll_sensitivity_l1 = -0.008  # m/rad，roll对l1的影响
+    roll_sensitivity_l2 = 0.008   # m/rad，roll对l2的影响
     
     # 计算各杆长度
-    # l3主要受pitch影响
-    l3 = base_length + pitch_effect * 0.5
-    
-    # l1和l2受roll影响，呈相反趋势
-    l1 = base_length - roll_effect * 0.5
-    l2 = base_length + roll_effect * 0.5
+    l3 = neutral_l3 + corrected_pitch * pitch_sensitivity
+    l1 = neutral_l1 + target_roll * roll_sensitivity_l1
+    l2 = neutral_l2 + target_roll * roll_sensitivity_l2
     
     # 确保在有效范围内
     l3 = np.clip(l3, 0.55, 0.85)
@@ -192,9 +190,9 @@ def validate_workspace_constraints(pitch_deg, roll_deg):
     if not (roll_min <= roll_deg <= roll_max):
         return False
     
-    # Check constraint pattern: pitch >= abs(roll) - 10
-    if pitch_deg < abs(roll_deg) - 10:
-        return False
+    # # Check constraint pattern: pitch >= abs(roll) - 10
+    # if pitch_deg < abs(roll_deg) - 10:
+    #     return False
     
     return True
 
@@ -207,10 +205,10 @@ def generate_lookup_table():
     
     # 参数设置
     a = 1.3  # 框架1边长
-    b = 1.0  # 框架2边长
+    b = 0.981  # 框架2边长 (corrected based on measurements)
     
     # 角度范围和分辨率 (updated based on workspace analysis)
-    pitch_min, pitch_max = -10.0, 15.0  # 度
+    pitch_min, pitch_max = -15.0, 15.0  # 度
     roll_min, roll_max = -15.0, 15.0    # 度
     resolution = 0.5   # 度
     
@@ -267,7 +265,6 @@ def generate_lookup_table():
         # 写入头部信息
         f.write("# Stewart Platform Inverse Kinematics Lookup Table\n")
         f.write(f"# Generated with Pitch [{pitch_min}°, {pitch_max}°], Roll [{roll_min}°, {roll_max}°], resolution {resolution}°\n")
-        f.write(f"# Constraint: pitch >= abs(roll) - 10\n")
         f.write(f"# Frame1 edge length: {a*1000:.0f}mm, Frame2 edge length: {b*1000:.0f}mm\n")
         f.write(f"# Total valid entries: {valid_count}\n")
         f.write("# Format: pitch(deg) roll(deg) l3(mm) l1(mm) l2(mm)\n")
@@ -278,7 +275,7 @@ def generate_lookup_table():
             f.write(f"{data['pitch']:6.1f} {data['roll']:6.1f} "
                    f"{data['l3']:7.1f} {data['l1']:7.1f} {data['l2']:7.1f}\n")
     
-        print(f"查找表已保存到: {filename}")
+    print(f"查找表已保存到: {filename}")
     
     # 打印统计信息
     if lookup_data:
@@ -301,8 +298,44 @@ def generate_lookup_table():
             print(f"Pitch:{data['pitch']:6.1f}°, Roll:{data['roll']:6.1f}° -> "
                   f"L3:{data['l3']:6.1f}mm, L1:{data['l1']:6.1f}mm, L2:{data['l2']:6.1f}mm")
 
+def test_corrected_inverse_kinematics():
+    """
+    测试修正后的逆向运动学
+    """
+    print("=== 测试修正后的逆向运动学 ===")
+    a = 1.3  # 框架1边长
+    b = 0.981  # 框架2边长 (corrected)
+    
+    # 测试用户的中性状态
+    print("测试中性状态 (pitch=0°, roll=0°):")
+    pitch_rad, roll_rad = np.radians(0), np.radians(0)
+    l3, l1, l2 = simplified_inverse_kinematics(pitch_rad, roll_rad, a, b)
+    print(f"结果: l3={l3*1000:.1f}mm, l1={l1*1000:.1f}mm, l2={l2*1000:.1f}mm")
+    print(f"期望: l3=670mm, l1=735mm, l2=735mm")
+    
+    # 测试其他角度
+    test_cases = [
+        (5, 0),    # pitch only
+        (0, 5),    # roll only
+        (-5, 0),   # negative pitch
+        (0, -5),   # negative roll
+        (10, 10),  # combined
+    ]
+    
+    print("\n其他测试用例:")
+    for pitch_deg, roll_deg in test_cases:
+        pitch_rad, roll_rad = np.radians(pitch_deg), np.radians(roll_deg)
+        l3, l1, l2 = simplified_inverse_kinematics(pitch_rad, roll_rad, a, b)
+        print(f"Pitch={pitch_deg:3.0f}°, Roll={roll_deg:3.0f}° -> "
+              f"l3={l3*1000:.1f}mm, l1={l1*1000:.1f}mm, l2={l2*1000:.1f}mm")
+
 def main():
     """主函数"""
+    # 先测试修正后的逆向运动学
+    test_corrected_inverse_kinematics()
+    print("\n" + "="*50 + "\n")
+    
+    # 生成修正后的查找表
     generate_lookup_table()
 
 if __name__ == "__main__":

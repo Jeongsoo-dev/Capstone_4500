@@ -121,6 +121,10 @@ def solve_platform_orientation(l3, l1, l2, a, b):
     if abs(roll) > np.pi/2:
         roll = roll - np.sign(roll) * np.pi
     
+    # 应用系统性pitch偏移校正 (0.529°转换为弧度)
+    pitch_offset = np.radians(0.529)
+    pitch = pitch - pitch_offset
+    
     return pitch, roll
 
 import matplotlib.pyplot as plt
@@ -137,8 +141,8 @@ def validate_workspace_constraints(pitch_deg, roll_deg):
         bool: True if within constraints, False otherwise
     """
     # Updated workspace constraints from analysis
-    pitch_min, pitch_max = -10.0, 15.0
-    roll_min, roll_max = -15.0, 15.0
+    pitch_min, pitch_max = -30.0, 30.0
+    roll_min, roll_max = -30.0, 30.0
     
     # Check basic ranges
     if not (pitch_min <= pitch_deg <= pitch_max):
@@ -146,9 +150,9 @@ def validate_workspace_constraints(pitch_deg, roll_deg):
     if not (roll_min <= roll_deg <= roll_max):
         return False
     
-    # Check constraint pattern: pitch >= abs(roll) - 10
-    if pitch_deg < abs(roll_deg) - 10:
-        return False
+    # # Check constraint pattern: pitch >= abs(roll) - 10
+    # if pitch_deg < abs(roll_deg) - 10:
+    #     return False
     
     return True
 
@@ -208,7 +212,14 @@ def test_basic_cases():
     """
     print("=== 测试基本情况 ===")
     a = 1.3  # 框架1边长 1300mm
-    b = 1.0  # 框架2边长 1000mm
+    b = 0.981  # 框架2边长 981mm (corrected from memory)
+    
+    # Test the user's measured neutral state first
+    print("=== 用户测量的中性状态 ===")
+    l3, l1, l2 = 0.670, 0.735, 0.735  # User's measured neutral state
+    pitch, roll = solve_platform_orientation(l3, l1, l2, a, b)
+    print(f"用户测量: l3={l3*1000:.0f}, l1={l1*1000:.0f}, l2={l2*1000:.0f}mm -> "
+          f"pitch={np.degrees(pitch):6.2f}°, roll={np.degrees(roll):6.2f}°")
     
     test_cases = [
         (0.7, 0.7, 0.7),  # 对称情况
@@ -231,7 +242,7 @@ def visualize_workspace():
     
     # 参数设置 (convert mm to meters for consistency)
     a = 1.3  # 框架1边长 1300mm
-    b = 1.0  # 框架2边长 1000mm
+    b = 0.981  # 框架2边长 981mm (corrected based on measurements)
     l_min, l_max = 0.55, 0.85  # 伸缩杆范围 [550, 850]mm
     
     # 采样点数
@@ -291,8 +302,8 @@ def visualize_workspace():
                     l3_vertex_z = l3 * 1000  # A_prime点的z坐标，转换为mm
                     midpoint_z = (mass_center_z + l3_vertex_z) / 2
                     
-                    # 检查质心与l3顶点中点的高度约束 [680, 720]mm
-                    if 680 <= midpoint_z <= 720:
+                    # 检查质心与l3顶点中点的高度约束 [650, 690]mm
+                    if 650 <= midpoint_z <= 690:
                         pitch_values.append(pitch_deg)
                         roll_values.append(roll_deg)
                         l3_values.append(l3 * 1000)  # convert back to mm
@@ -322,7 +333,7 @@ def visualize_workspace():
     
     # 创建可视化
     fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-    fig.suptitle('Stewart Platform Workspace Analysis\n(a=1300mm, b=1000mm, l=[550,850]mm, midpoint_z=[680,720]mm)\nConstraints: Pitch[-10°,15°], Roll[-15°,15°], pitch >= abs(roll) - 10', fontsize=12)
+    fig.suptitle('Stewart Platform Workspace Analysis\n(a=1300mm, b=981mm, l=[550,850]mm, midpoint_z=[650,690]mm)\nConstraints: Pitch[-10°,15°], Roll[-15°,15°], pitch >= abs(roll) - 10', fontsize=12)
     
     # 1. Pitch-Roll工作空间
     axes[0, 0].scatter(roll_values, pitch_values, c='blue', alpha=0.6, s=1)
@@ -364,6 +375,20 @@ def visualize_workspace():
     print(f"Roll:  {min(roll_values):.2f}° ~ {max(roll_values):.2f}° (范围: {max(roll_values)-min(roll_values):.2f}°)")
     print(f"中点高度: {min(mass_center_values):.1f}mm ~ {max(mass_center_values):.1f}mm (范围: {max(mass_center_values)-min(mass_center_values):.1f}mm)")
     print(f"最大总角度偏移: {max(radii):.2f}°")
+
+def test_user_position(l3_mm, l1_mm, l2_mm):
+    """
+    Test a specific actuator position for pitch and roll angles
+    """
+    a = 1.3  # Frame 1 edge length 1300mm
+    b = 0.981  # Frame 2 edge length 981mm (corrected)
+    
+    l3, l1, l2 = l3_mm/1000, l1_mm/1000, l2_mm/1000  # Convert to meters
+    pitch, roll = solve_platform_orientation(l3, l1, l2, a, b)
+    
+    print(f"测试位置: l3={l3_mm:.0f}, l1={l1_mm:.0f}, l2={l2_mm:.0f}mm")
+    print(f"结果: pitch={np.degrees(pitch):6.2f}°, roll={np.degrees(roll):6.2f}°")
+    return np.degrees(pitch), np.degrees(roll)
 
 def main():
     # 运行工作空间可视化

@@ -14,7 +14,8 @@ const char* password = "esp32vrchair";
 // -- Stewart Platform Physical Dimensions
 const int minLength = 550;      // mm - minimum actuator length
 const int maxLength = 850;      // mm - maximum actuator length
-const int homeLength = 700;     // mm - neutral/level position
+// Neutral state lengths based on corrected mathematical model
+const int neutralLength[3] = {735, 735, 670}; // mm - Motor 1(l1), Motor 2(l2), Motor 3(l3)
 const float armRadius = 200.0;  // mm - radius from center to actuator mount
 
 // -- Control Loop  
@@ -38,7 +39,7 @@ WebSocketsServer webSocket = WebSocketsServer(81);
 
 // -- Actuator Position Tracking
 float currentLength[3] = {minLength, minLength, minLength}; // Current lengths [A, B, C]
-float targetLength[3] = {homeLength, homeLength, homeLength}; // Target lengths [A, B, C]
+float targetLength[3] = {neutralLength[0], neutralLength[1], neutralLength[2]}; // Target lengths [A, B, C]
 const float actuatorAngles[3] = {0, 120, 240}; // Actuator positions in degrees
 
 // -- Timing
@@ -96,46 +97,48 @@ void setup() {
   stopAllMotors();
   debugPrint("[✓] All actuators at shortest position");
   
-  // STEP 2: Move actuators up to home position
-  debugPrint("[*] Moving to home position...");
+  // STEP 2: Move actuators up to neutral positions
+  debugPrint("[*] Moving to neutral positions...");
   
-  // Set targets to home length and move there
+  // Set targets to neutral lengths and move there
   for (int i = 0; i < 3; i++) {
-    targetLength[i] = homeLength;
+    targetLength[i] = neutralLength[i];
     currentLength[i] = minLength; // Set current position to minimum since we're at bottom
   }
   
-  // Move actuators to home position and wait until they actually reach it
-  const float positionTolerance = 5.0; // mm - how close to home position is "close enough"
-  const unsigned long maxHomeTime = 8000; // Max 8 seconds to reach home (safety)
-  unsigned long homeStartTime = millis();
-  bool allAtHome = false;
+  // Move actuators to neutral positions and wait until they actually reach it
+  const float positionTolerance = 5.0; // mm - how close to neutral position is "close enough"
+  const unsigned long maxNeutralTime = 8000; // Max 8 seconds to reach neutral (safety)
+  unsigned long neutralStartTime = millis();
+  bool allAtNeutral = false;
   
-  while (!allAtHome && (millis() - homeStartTime < maxHomeTime)) {
+  while (!allAtNeutral && (millis() - neutralStartTime < maxNeutralTime)) {
     updateActuatorsSmoothly();
     
-    // Check if all actuators are close enough to home position
-    bool actuator1AtHome = abs(currentLength[0] - homeLength) <= positionTolerance;
-    bool actuator2AtHome = abs(currentLength[1] - homeLength) <= positionTolerance;
-    bool actuator3AtHome = abs(currentLength[2] - homeLength) <= positionTolerance;
+    // Check if all actuators are close enough to neutral positions
+    bool actuator1AtNeutral = abs(currentLength[0] - neutralLength[0]) <= positionTolerance;
+    bool actuator2AtNeutral = abs(currentLength[1] - neutralLength[1]) <= positionTolerance;
+    bool actuator3AtNeutral = abs(currentLength[2] - neutralLength[2]) <= positionTolerance;
     
-    if (actuator1AtHome && actuator2AtHome && actuator3AtHome) {
-      allAtHome = true;
-      debugPrintf("All actuators reached home position - Lengths: %.1f, %.1f, %.1f mm", 
+    if (actuator1AtNeutral && actuator2AtNeutral && actuator3AtNeutral) {
+      allAtNeutral = true;
+      debugPrintf("All actuators reached neutral positions - Lengths: %.1f, %.1f, %.1f mm", 
                   currentLength[0], currentLength[1], currentLength[2]);
     }
     
     delay(updateInterval);
   }
   
-  if (!allAtHome) {
-    debugPrint("[!] Warning: Not all actuators reached home position within time limit");
-    debugPrintf("Current positions: %.1f, %.1f, %.1f mm (target: %.1f mm)", 
-                currentLength[0], currentLength[1], currentLength[2], homeLength);
+  if (!allAtNeutral) {
+    debugPrint("[!] Warning: Not all actuators reached neutral position within timeout");
+    debugPrintf("Current positions - Motor 1: %.1f mm, Motor 2: %.1f mm, Motor 3: %.1f mm", 
+                currentLength[0], currentLength[1], currentLength[2]);
+  } else {
+    debugPrint("[✓] Stewart Platform at NEUTRAL STATE and ready for control");
   }
   
-  // Hold at home position for 1 second to ensure stability
-  debugPrint("[*] Stabilizing at home position...");
+  // Hold at neutral position for 1 second to ensure stability
+  debugPrint("[*] Stabilizing at neutral position...");
   unsigned long stabilizeStartTime = millis();
   while (millis() - stabilizeStartTime < 1000) { // 1 second
     updateActuatorsSmoothly(); // Continue fine-tuning position
@@ -145,7 +148,7 @@ void setup() {
   // Stop all motors
   stopAllMotors();
   
-  debugPrint("[✓] Initialization complete - platform stable at home position");
+  debugPrint("[✓] Initialization complete - platform stable at neutral state");
 
   // Start WebSocket server
   webSocket.begin();

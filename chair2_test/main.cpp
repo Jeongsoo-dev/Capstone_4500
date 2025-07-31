@@ -28,12 +28,13 @@ const float actuatorSpeed = 84.0;   // mm/s
 const float armRadius = 200.0;      // mm from center to actuator
 
 // ===== Length tracking =====
-float currentLengthA = 550;
-float currentLengthB = 550;
-float currentLengthC = 550;
-float targetLengthA = 550;
-float targetLengthB = 550;
-float targetLengthC = 550;
+// Initialize to neutral state: Motor A(l1)=735mm, Motor B(l2)=735mm, Motor C(l3)=670mm
+float currentLengthA = 735;  // Front Left = l1 = 735mm
+float currentLengthB = 735;  // Front Right = l2 = 735mm  
+float currentLengthC = 670;  // Rear = l3 = 670mm
+float targetLengthA = 735;
+float targetLengthB = 735;
+float targetLengthC = 670;
 
 // ===== Timing =====
 unsigned long lastUpdate = 0;
@@ -83,6 +84,25 @@ void setup() {
   webSocket.begin();
   webSocket.onEvent(onWebSocketEvent);
   debugPrint("[✓] WebSocket server running on port 81");
+  
+  // Move actuators to neutral state during initialization
+  debugPrint("[*] Moving to neutral state...");
+  
+  // First move all actuators to minimum position for reference
+  resetActuator(DIR_A, CH_A);
+  resetActuator(DIR_B, CH_B);  
+  resetActuator(DIR_C, CH_C);
+  delay(4000); // Allow time to reach minimum
+  
+  // Then move to neutral positions
+  debugPrint("Moving to neutral: A=735mm, B=735mm, C=670mm");
+  driveMotor(735, DIR_A, CH_A);  // Motor A to 735mm
+  driveMotor(735, DIR_B, CH_B);  // Motor B to 735mm
+  driveMotor(670, DIR_C, CH_C);  // Motor C to 670mm
+  
+  // Wait for actuators to reach neutral positions
+  delay(3000);
+  debugPrint("[✓] All actuators at neutral state");
 }
 
 // ===== Main Loop =====
