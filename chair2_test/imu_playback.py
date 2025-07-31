@@ -17,32 +17,38 @@ PLAYBACK_SPEED_MULTIPLIER = 1.0  # 1.0 = real-time, 0.5 = half speed, 2.0 = doub
 
 def normalize_timestamp(timestamp_str):
     """Normalize timestamps to ensure consistent formatting."""
-    # Use regex to find and normalize the timestamp format
-    pattern = r'(\d{4})-(\d{1,2})-(\d{1,2}) (\d{1,2}):(\d{2}):(\d{2})\.?(\d*)'
-    match = re.match(pattern, timestamp_str)
+    # Handle various timestamp format patterns
+    timestamp_str = str(timestamp_str).strip()
     
-    if match:
-        year, month, day, hour, minute, second, milliseconds = match.groups()
+    # Pattern 1: Full timestamp with milliseconds
+    pattern1 = r'(\d{4})-(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{2}):(\d{2})\.(\d+)'
+    match1 = re.match(pattern1, timestamp_str)
+    
+    if match1:
+        year, month, day, hour, minute, second, millis = match1.groups()
+        # Pad single digits and normalize milliseconds to 3 digits
+        month = month.zfill(2)
+        day = day.zfill(2)
+        hour = hour.zfill(2)
+        millis = millis.ljust(3, '0')[:3]  # Pad to 3 digits or truncate
         
-        # Pad single digit month/day/hour with leading zeros
+        return f"{year}-{month}-{day} {hour}:{minute}:{second}.{millis}"
+    
+    # Pattern 2: Timestamp without milliseconds
+    pattern2 = r'(\d{4})-(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{2}):(\d{2})$'
+    match2 = re.match(pattern2, timestamp_str)
+    
+    if match2:
+        year, month, day, hour, minute, second = match2.groups()
+        # Pad single digits and add .000 for milliseconds
         month = month.zfill(2)
         day = day.zfill(2)
         hour = hour.zfill(2)
         
-        # Handle milliseconds
-        if milliseconds:
-            # Pad or truncate milliseconds to exactly 3 digits
-            if len(milliseconds) < 3:
-                milliseconds = milliseconds.ljust(3, '0')
-            elif len(milliseconds) > 3:
-                milliseconds = milliseconds[:3]
-        else:
-            milliseconds = '000'
-            
-        return f"{year}-{month}-{day} {hour}:{minute}:{second}.{milliseconds}"
-    else:
-        # Fallback: if no milliseconds, add .000
-        return f"{timestamp_str}.000"
+        return f"{year}-{month}-{day} {hour}:{minute}:{second}.000"
+    
+    # Fallback: return original with .000 if no pattern matches
+    return f"{timestamp_str}.000" if '.' not in timestamp_str else timestamp_str
 
 def load_imu_data(filepath):
     """Loads IMU data from a tab-separated file into a pandas DataFrame."""
@@ -70,8 +76,8 @@ def load_imu_data(filepath):
         df['timestamp'] = df['timestamp'].apply(normalize_timestamp)
         
         # Convert timestamps to datetime objects to calculate delays
-        # Use infer_datetime_format=True to handle variable date formats
-        df['timestamp'] = pd.to_datetime(df['timestamp'], infer_datetime_format=True)
+        # Use format='mixed' to handle inconsistent timestamp formats
+        df['timestamp'] = pd.to_datetime(df['timestamp'], format='mixed')
         
         # Convert acceleration from g to m/s^2
         for axis in ['x', 'y', 'z']:
