@@ -12,6 +12,33 @@ import sys
 WEBSOCKET_URI = "ws://192.168.4.1:81"
 LOOKUP_TABLE_FILE = "lookup_table.txt"
 
+def validate_workspace_constraints(pitch_deg, roll_deg):
+    """
+    Validate workspace constraints based on analysis
+    
+    Args:
+        pitch_deg: Pitch angle in degrees
+        roll_deg: Roll angle in degrees
+        
+    Returns:
+        bool: True if within constraints, False otherwise
+    """
+    # Updated workspace constraints from analysis
+    pitch_min, pitch_max = -10.0, 15.0
+    roll_min, roll_max = -15.0, 15.0
+    
+    # Check basic ranges
+    if not (pitch_min <= pitch_deg <= pitch_max):
+        return False
+    if not (roll_min <= roll_deg <= roll_max):
+        return False
+    
+    # Check constraint pattern: pitch >= abs(roll) - 10
+    if pitch_deg < abs(roll_deg) - 10:
+        return False
+    
+    return True
+
 class LookupTableController:
     def __init__(self, table_file):
         """Initialize the lookup table controller"""
@@ -93,6 +120,14 @@ class LookupTableController:
         Returns:
             tuple: (l1, l2, l3) actuator lengths in mm, or (None, None, None) if out of range
         """
+        # Check workspace constraints first
+        if not validate_workspace_constraints(pitch_deg, roll_deg):
+            print(f"Warning: Input ({pitch_deg:.1f}°, {roll_deg:.1f}°) violates workspace constraints")
+            print(f"  Pitch range: [-10.0°, 15.0°]")
+            print(f"  Roll range: [-15.0°, 15.0°]") 
+            print(f"  Constraint: pitch >= abs(roll) - 10")
+            return None, None, None
+        
         # Check if values are within the lookup table range
         if (pitch_deg < self.pitch_values.min() or pitch_deg > self.pitch_values.max() or
             roll_deg < self.roll_values.min() or roll_deg > self.roll_values.max()):
@@ -160,7 +195,7 @@ def get_user_input():
     
     while True:
         try:
-            pitch_input = input("Enter pitch angle (-15.0 to +15.0 degrees): ").strip()
+            pitch_input = input("Enter pitch angle (-10.0 to +15.0 degrees): ").strip()
             if pitch_input.lower() in ['q', 'quit', 'exit']:
                 return None, None
                 
@@ -171,6 +206,14 @@ def get_user_input():
                 return None, None
                 
             roll = float(roll_input)
+            
+            # Validate workspace constraints
+            if not validate_workspace_constraints(pitch, roll):
+                print("❌ Input violates workspace constraints:")
+                print("  Pitch range: [-10.0°, 15.0°]")
+                print("  Roll range: [-15.0°, 15.0°]")
+                print("  Constraint: pitch >= abs(roll) - 10")
+                continue
             
             return pitch, roll
             
@@ -249,14 +292,16 @@ def test_lookup_functionality():
     
     controller = LookupTableController(LOOKUP_TABLE_FILE)
     
-    # Test cases
+    # Test cases (updated for new workspace constraints)
     test_cases = [
         (0.0, 0.0),      # Center position
         (5.0, 3.0),      # Mild positive tilt
-        (-10.0, -5.0),   # Negative tilt
-        (15.0, 15.0),    # Maximum positive
-        (-15.0, -15.0),  # Maximum negative
+        (-5.0, -5.0),    # Negative tilt within constraints
+        (15.0, 10.0),    # Near maximum positive (satisfies pitch >= abs(roll) - 10)
+        (-10.0, 0.0),    # Maximum negative pitch
         (2.3, -7.8),     # Non-grid point (requires interpolation)
+        (15.0, 15.0),    # This should fail constraint: pitch >= abs(roll) - 10
+        (-10.0, -15.0),  # This should fail constraint
     ]
     
     print("\nTest Results:")

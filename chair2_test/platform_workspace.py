@@ -125,6 +125,33 @@ def solve_platform_orientation(l1, l2, l3, a, b):
 
 import matplotlib.pyplot as plt
 
+def validate_workspace_constraints(pitch_deg, roll_deg):
+    """
+    Validate workspace constraints based on analysis
+    
+    Args:
+        pitch_deg: Pitch angle in degrees
+        roll_deg: Roll angle in degrees
+        
+    Returns:
+        bool: True if within constraints, False otherwise
+    """
+    # Updated workspace constraints from analysis
+    pitch_min, pitch_max = -10.0, 15.0
+    roll_min, roll_max = -15.0, 15.0
+    
+    # Check basic ranges
+    if not (pitch_min <= pitch_deg <= pitch_max):
+        return False
+    if not (roll_min <= roll_deg <= roll_max):
+        return False
+    
+    # Check constraint pattern: pitch >= abs(roll) - 10
+    if pitch_deg < abs(roll_deg) - 10:
+        return False
+    
+    return True
+
 def solve_platform_center_height(l1, l2, l3, a, b):
     """
     计算平台质心的z坐标偏移量（相对于l1）
@@ -253,6 +280,10 @@ def visualize_workspace():
                     while roll_deg < -180:
                         roll_deg += 360
                     
+                    # Check workspace constraints: pitch [-10, 15], roll [-15, 15], pitch >= abs(roll) - 10
+                    if not validate_workspace_constraints(pitch_deg, roll_deg):
+                        continue  # Skip points outside workspace constraints
+                    
                     # 计算平台质心高度（z坐标）
                     mass_center_z = (l1 + solve_platform_center_height(l1, l2, l3, a, b)) * 1000  # 转换为mm
                     
@@ -291,7 +322,7 @@ def visualize_workspace():
     
     # 创建可视化
     fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-    fig.suptitle('Stewart Platform Workspace Analysis\n(a=1300mm, b=1000mm, l=[550,850]mm, midpoint_z=[680,720]mm)', fontsize=14)
+    fig.suptitle('Stewart Platform Workspace Analysis\n(a=1300mm, b=1000mm, l=[550,850]mm, midpoint_z=[680,720]mm)\nConstraints: Pitch[-10°,15°], Roll[-15°,15°], pitch >= abs(roll) - 10', fontsize=12)
     
     # 1. Pitch-Roll工作空间
     axes[0, 0].scatter(roll_values, pitch_values, c='blue', alpha=0.6, s=1)

@@ -171,37 +171,71 @@ def simplified_inverse_kinematics(target_pitch, target_roll, a, b):
     
     return l1, l2, l3
 
+def validate_workspace_constraints(pitch_deg, roll_deg):
+    """
+    Validate workspace constraints based on analysis
+    
+    Args:
+        pitch_deg: Pitch angle in degrees
+        roll_deg: Roll angle in degrees
+        
+    Returns:
+        bool: True if within constraints, False otherwise
+    """
+    # Updated workspace constraints from analysis
+    pitch_min, pitch_max = -10.0, 15.0
+    roll_min, roll_max = -15.0, 15.0
+    
+    # Check basic ranges
+    if not (pitch_min <= pitch_deg <= pitch_max):
+        return False
+    if not (roll_min <= roll_deg <= roll_max):
+        return False
+    
+    # Check constraint pattern: pitch >= abs(roll) - 10
+    if pitch_deg < abs(roll_deg) - 10:
+        return False
+    
+    return True
+
 def generate_lookup_table():
     """
     生成查找表：pitch/roll -> l1,l2,l3
-    范围：[-15°, +15°]，分辨率：0.5°
+    Pitch范围：[-10°, +15°]，Roll范围：[-15°, +15°]，分辨率：0.5°
+    约束：pitch >= abs(roll) - 10
     """
     
     # 参数设置
     a = 1.3  # 框架1边长
     b = 1.0  # 框架2边长
     
-    # 角度范围和分辨率
-    angle_min = -15.0  # 度
-    angle_max = 15.0   # 度
+    # 角度范围和分辨率 (updated based on workspace analysis)
+    pitch_min, pitch_max = -10.0, 15.0  # 度
+    roll_min, roll_max = -15.0, 15.0    # 度
     resolution = 0.5   # 度
     
     # 生成角度网格
-    angles = np.arange(angle_min, angle_max + resolution, resolution)
+    pitch_angles = np.arange(pitch_min, pitch_max + resolution, resolution)
+    roll_angles = np.arange(roll_min, roll_max + resolution, resolution)
     
     print(f"生成查找表...")
-    print(f"角度范围: [{angle_min}°, {angle_max}°]")
+    print(f"Pitch范围: [{pitch_min}°, {pitch_max}°]")
+    print(f"Roll范围: [{roll_min}°, {roll_max}°]")
     print(f"分辨率: {resolution}°")
-    print(f"网格大小: {len(angles)} x {len(angles)} = {len(angles)**2} 个点")
+    print(f"网格大小: {len(pitch_angles)} x {len(roll_angles)} = {len(pitch_angles) * len(roll_angles)} 个点")
     
     # 存储结果
     lookup_data = []
     valid_count = 0
     total_count = 0
     
-    for pitch_deg in angles:
-        for roll_deg in angles:
+    for pitch_deg in pitch_angles:
+        for roll_deg in roll_angles:
             total_count += 1
+            
+            # Check workspace constraints first
+            if not validate_workspace_constraints(pitch_deg, roll_deg):
+                continue  # Skip points outside workspace constraints
             
             # 转换为弧度
             pitch_rad = np.radians(pitch_deg)
@@ -222,7 +256,8 @@ def generate_lookup_table():
                 valid_count += 1
                 
             if total_count % 100 == 0:
-                print(f"进度: {total_count}/{len(angles)**2} ({100*total_count/(len(angles)**2):.1f}%), 有效解: {valid_count}")
+                total_points = len(pitch_angles) * len(roll_angles)
+                print(f"进度: {total_count}/{total_points} ({100*total_count/total_points:.1f}%), 有效解: {valid_count}")
     
     print(f"生成完成！总点数: {total_count}, 有效解: {valid_count} ({100*valid_count/total_count:.1f}%)")
     
@@ -231,7 +266,8 @@ def generate_lookup_table():
     with open(filename, 'w', encoding='utf-8') as f:
         # 写入头部信息
         f.write("# Stewart Platform Inverse Kinematics Lookup Table\n")
-        f.write(f"# Generated with range [{angle_min}°, {angle_max}°], resolution {resolution}°\n")
+        f.write(f"# Generated with Pitch [{pitch_min}°, {pitch_max}°], Roll [{roll_min}°, {roll_max}°], resolution {resolution}°\n")
+        f.write(f"# Constraint: pitch >= abs(roll) - 10\n")
         f.write(f"# Frame1 edge length: {a*1000:.0f}mm, Frame2 edge length: {b*1000:.0f}mm\n")
         f.write(f"# Total valid entries: {valid_count}\n")
         f.write("# Format: pitch(deg) roll(deg) l1(mm) l2(mm) l3(mm)\n")
