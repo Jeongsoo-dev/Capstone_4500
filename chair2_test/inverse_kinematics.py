@@ -15,7 +15,7 @@ def solve_inverse_kinematics(target_pitch, target_roll, a, b, target_height=0.7)
     target_height: 目标平台平均高度（米）
     
     返回:
-    l1, l2, l3: 三个伸缩杆的长度，如果无解则返回None
+    l3, l1, l2: 三个伸缩杆的长度，如果无解则返回None
     """
     
     # 框架1的顶点坐标（在xy平面上）
@@ -58,8 +58,8 @@ def solve_inverse_kinematics(target_pitch, target_roll, a, b, target_height=0.7)
     
     # 定义求解函数
     def equations(vars):
-        # vars = [l1, l2, l3, center_z]
-        l1, l2, l3, center_z = vars
+        # vars = [l3, l1, l2, center_z]
+        l3, l1, l2, center_z = vars
         
         # 获取目标顶点位置
         target_vertices = get_target_vertices(center_z)
@@ -68,10 +68,10 @@ def solve_inverse_kinematics(target_pitch, target_roll, a, b, target_height=0.7)
         C_prime_target = target_vertices[2]
         
         # 根据伸缩杆长度计算实际位置
-        A_prime_actual = np.array([0, 0, l1])
+        A_prime_actual = np.array([0, 0, l3])
         
         # B'和C'需要满足距离约束
-        # |B'B| = l2, |C'C| = l3
+        # |B'B| = l1, |C'C| = l2
         # |B'A'| = b, |C'A'| = b, |C'B'| = b
         
         # 约束方程
@@ -84,13 +84,13 @@ def solve_inverse_kinematics(target_pitch, target_roll, a, b, target_height=0.7)
         B_base_to_target = np.linalg.norm(B_prime_target - B)
         C_base_to_target = np.linalg.norm(C_prime_target - C)
         
-        eq2 = B_base_to_target - l2
-        eq3 = C_base_to_target - l3
+        eq2 = B_base_to_target - l1
+        eq3 = C_base_to_target - l2
         
         # 添加平台高度约束（中点高度）
         platform_center_z = (A_prime_actual[2] + A_prime_target[2] + A_prime_target[2]) / 3
-        l1_vertex_z = l1
-        midpoint_z = (platform_center_z + l1_vertex_z) / 2
+        l3_vertex_z = l3
+        midpoint_z = (platform_center_z + l3_vertex_z) / 2
         eq4 = (midpoint_z - 0.7) * 1000  # 目标中点高度约束，转换为mm单位增加权重
         
         return [eq1, eq2, eq3, eq4]
@@ -109,10 +109,10 @@ def solve_inverse_kinematics(target_pitch, target_roll, a, b, target_height=0.7)
     for initial_guess in initial_guesses:
         try:
             solution = fsolve(equations, initial_guess, xtol=1e-6, maxfev=10000)
-            l1, l2, l3, center_z = solution
+            l3, l1, l2, center_z = solution
             
             # 检查解的有效性
-            if l1 < 0.55 or l1 > 0.85 or l2 < 0.55 or l2 > 0.85 or l3 < 0.55 or l3 > 0.85:
+            if l3 < 0.55 or l3 > 0.85 or l1 < 0.55 or l1 > 0.85 or l2 < 0.55 or l2 > 0.85:
                 continue  # 超出伸缩杆范围
             
             # 计算残差
@@ -127,8 +127,8 @@ def solve_inverse_kinematics(target_pitch, target_roll, a, b, target_height=0.7)
             continue
     
     if best_solution is not None and min_error < 1e-3:  # 解的精度要求
-        l1, l2, l3, _ = best_solution
-        return l1, l2, l3
+        l3, l1, l2, _ = best_solution
+        return l3, l1, l2
     else:
         return None, None, None
 
@@ -157,19 +157,19 @@ def simplified_inverse_kinematics(target_pitch, target_roll, a, b):
     roll_effect = target_roll * frame2_radius    # roll对侧向的影响
     
     # 计算各杆长度
-    # l1主要受pitch影响
-    l1 = base_length + pitch_effect * 0.5
+    # l3主要受pitch影响
+    l3 = base_length + pitch_effect * 0.5
     
-    # l2和l3受roll影响，呈相反趋势
-    l2 = base_length - roll_effect * 0.5
-    l3 = base_length + roll_effect * 0.5
+    # l1和l2受roll影响，呈相反趋势
+    l1 = base_length - roll_effect * 0.5
+    l2 = base_length + roll_effect * 0.5
     
     # 确保在有效范围内
+    l3 = np.clip(l3, 0.55, 0.85)
     l1 = np.clip(l1, 0.55, 0.85)
     l2 = np.clip(l2, 0.55, 0.85)
-    l3 = np.clip(l3, 0.55, 0.85)
     
-    return l1, l2, l3
+    return l3, l1, l2
 
 def validate_workspace_constraints(pitch_deg, roll_deg):
     """
@@ -200,7 +200,7 @@ def validate_workspace_constraints(pitch_deg, roll_deg):
 
 def generate_lookup_table():
     """
-    生成查找表：pitch/roll -> l1,l2,l3
+    生成查找表：pitch/roll -> l3,l1,l2
     Pitch范围：[-10°, +15°]，Roll范围：[-15°, +15°]，分辨率：0.5°
     约束：pitch >= abs(roll) - 10
     """
@@ -242,16 +242,16 @@ def generate_lookup_table():
             roll_rad = np.radians(roll_deg)
             
             # 使用简化方法求解逆向运动学
-            l1, l2, l3 = simplified_inverse_kinematics(pitch_rad, roll_rad, a, b)
+            l3, l1, l2 = simplified_inverse_kinematics(pitch_rad, roll_rad, a, b)
             
-            if l1 is not None and l2 is not None and l3 is not None:
+            if l3 is not None and l1 is not None and l2 is not None:
                 # 验证解的有效性 - 可以调用正向运动学验证
                 lookup_data.append({
                     'pitch': pitch_deg,
                     'roll': roll_deg,
-                    'l1': l1 * 1000,  # 转换为mm
-                    'l2': l2 * 1000,
-                    'l3': l3 * 1000
+                    'l3': l3 * 1000,  # 转换为mm
+                    'l1': l1 * 1000,
+                    'l2': l2 * 1000
                 })
                 valid_count += 1
                 
@@ -270,36 +270,36 @@ def generate_lookup_table():
         f.write(f"# Constraint: pitch >= abs(roll) - 10\n")
         f.write(f"# Frame1 edge length: {a*1000:.0f}mm, Frame2 edge length: {b*1000:.0f}mm\n")
         f.write(f"# Total valid entries: {valid_count}\n")
-        f.write("# Format: pitch(deg) roll(deg) l1(mm) l2(mm) l3(mm)\n")
+        f.write("# Format: pitch(deg) roll(deg) l3(mm) l1(mm) l2(mm)\n")
         f.write("#\n")
         
         # 写入数据
         for data in lookup_data:
             f.write(f"{data['pitch']:6.1f} {data['roll']:6.1f} "
-                   f"{data['l1']:7.1f} {data['l2']:7.1f} {data['l3']:7.1f}\n")
+                   f"{data['l3']:7.1f} {data['l1']:7.1f} {data['l2']:7.1f}\n")
     
-    print(f"查找表已保存到: {filename}")
+        print(f"查找表已保存到: {filename}")
     
     # 打印统计信息
     if lookup_data:
         pitches = [d['pitch'] for d in lookup_data]
         rolls = [d['roll'] for d in lookup_data]
+        l3s = [d['l3'] for d in lookup_data]
         l1s = [d['l1'] for d in lookup_data]
         l2s = [d['l2'] for d in lookup_data]
-        l3s = [d['l3'] for d in lookup_data]
         
         print("\n=== 查找表统计信息 ===")
         print(f"Pitch范围: {min(pitches):.1f}° ~ {max(pitches):.1f}°")
         print(f"Roll范围: {min(rolls):.1f}° ~ {max(rolls):.1f}°")
+        print(f"L3范围: {min(l3s):.1f}mm ~ {max(l3s):.1f}mm")
         print(f"L1范围: {min(l1s):.1f}mm ~ {max(l1s):.1f}mm")
         print(f"L2范围: {min(l2s):.1f}mm ~ {max(l2s):.1f}mm")
-        print(f"L3范围: {min(l3s):.1f}mm ~ {max(l3s):.1f}mm")
         
         # 显示前几个示例
         print("\n=== 前10个条目示例 ===")
         for i, data in enumerate(lookup_data[:10]):
             print(f"Pitch:{data['pitch']:6.1f}°, Roll:{data['roll']:6.1f}° -> "
-                  f"L1:{data['l1']:6.1f}mm, L2:{data['l2']:6.1f}mm, L3:{data['l3']:6.1f}mm")
+                  f"L3:{data['l3']:6.1f}mm, L1:{data['l1']:6.1f}mm, L2:{data['l2']:6.1f}mm")
 
 def main():
     """主函数"""

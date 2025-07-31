@@ -3,7 +3,7 @@
 # Constraint: pitch >= abs(roll) - 10
 # Frame1 edge length: 1300mm, Frame2 edge length: 1000mm
 # Total valid entries: 2181
-# Format: pitch(deg) roll(deg) l1(mm) l2(mm) l3(mm)
+# Format: pitch(deg) roll(deg) l3(mm) l1(mm) l2(mm)
 #
  -10.0    0.0   641.8   700.0   700.0
   -9.5   -0.5   644.7   702.9   697.1

@@ -3,12 +3,12 @@ from scipy.optimize import fsolve
 import warnings
 warnings.filterwarnings('ignore')
 
-def solve_platform_orientation(l1, l2, l3, a, b):
+def solve_platform_orientation(l3, l1, l2, a, b):
     """
     求解双三角形框架系统的姿态
     
     参数:
-    l1, l2, l3: 三个伸缩杆的长度
+    l3, l1, l2: 三个伸缩杆的长度
     a: 框架1的边长
     b: 框架2的边长
     
@@ -22,8 +22,8 @@ def solve_platform_orientation(l1, l2, l3, a, b):
     B = np.array([a*np.sqrt(3)/2, a/2, 0])
     C = np.array([a*np.sqrt(3)/2, -a/2, 0])
     
-    # 伸缩杆1垂直于框架1，所以A'的位置确定
-    A_prime = np.array([0, 0, l1])
+    # 伸缩杆3垂直于框架1，所以A'的位置确定
+    A_prime = np.array([0, 0, l3])
     
     # 定义求解函数
     def equations(vars):
@@ -32,8 +32,8 @@ def solve_platform_orientation(l1, l2, l3, a, b):
         C_prime = np.array([vars[3], vars[4], vars[5]])
         
         # 约束方程
-        eq1 = np.linalg.norm(B_prime - B) - l2  # |B'B| = l2
-        eq2 = np.linalg.norm(C_prime - C) - l3  # |C'C| = l3
+        eq1 = np.linalg.norm(B_prime - B) - l1  # |B'B| = l1
+        eq2 = np.linalg.norm(C_prime - C) - l2  # |C'C| = l2
         eq3 = np.linalg.norm(B_prime - A_prime) - b  # |B'A'| = b
         eq4 = np.linalg.norm(C_prime - A_prime) - b  # |C'A'| = b
         eq5 = np.linalg.norm(C_prime - B_prime) - b  # |C'B'| = b
@@ -58,8 +58,8 @@ def solve_platform_orientation(l1, l2, l3, a, b):
     
     # 初始猜测
     initial_guess = [
-        B[0], B[1], l1,  # B'的初始位置
-        C[0], C[1], l1   # C'的初始位置
+        B[0], B[1], l3,  # B'的初始位置
+        C[0], C[1], l3   # C'的初始位置
     ]
     
     # 求解
@@ -152,23 +152,23 @@ def validate_workspace_constraints(pitch_deg, roll_deg):
     
     return True
 
-def solve_platform_center_height(l1, l2, l3, a, b):
+def solve_platform_center_height(l3, l1, l2, a, b):
     """
-    计算平台质心的z坐标偏移量（相对于l1）
+    计算平台质心的z坐标偏移量（相对于l3）
     """
     # 复用现有的求解逻辑，但只返回质心高度
     A = np.array([0, 0, 0])
     B = np.array([a*np.sqrt(3)/2, a/2, 0])
     C = np.array([a*np.sqrt(3)/2, -a/2, 0])
-    A_prime = np.array([0, 0, l1])
+    A_prime = np.array([0, 0, l3])
     
     # 定义求解函数
     def equations(vars):
         B_prime = np.array([vars[0], vars[1], vars[2]])
         C_prime = np.array([vars[3], vars[4], vars[5]])
         
-        eq1 = np.linalg.norm(B_prime - B) - l2
-        eq2 = np.linalg.norm(C_prime - C) - l3
+        eq1 = np.linalg.norm(B_prime - B) - l1
+        eq2 = np.linalg.norm(C_prime - C) - l2
         eq3 = np.linalg.norm(B_prime - A_prime) - b
         eq4 = np.linalg.norm(C_prime - A_prime) - b
         eq5 = np.linalg.norm(C_prime - B_prime) - b
@@ -180,7 +180,7 @@ def solve_platform_center_height(l1, l2, l3, a, b):
         
         return [eq1, eq2, eq3, eq4, eq5, eq6]
     
-    initial_guess = [B[0], B[1], l1, C[0], C[1], l1]
+    initial_guess = [B[0], B[1], l3, C[0], C[1], l3]
     
     try:
         solution = fsolve(equations, initial_guess, xtol=1e-3, maxfev=20000)
@@ -197,7 +197,7 @@ def solve_platform_center_height(l1, l2, l3, a, b):
         
         # 计算平台质心
         center_z = (A_prime[2] + B_prime[2] + C_prime[2]) / 3
-        return center_z - l1  # 返回相对于l1的偏移量
+        return center_z - l3  # 返回相对于l3的偏移量
         
     except:
         return 0.0
@@ -217,9 +217,9 @@ def test_basic_cases():
         (0.7, 0.75, 0.8),  # 非对称情况
     ]
     
-    for l1, l2, l3 in test_cases:
-        pitch, roll = solve_platform_orientation(l1, l2, l3, a, b)
-        print(f"l1={l1*1000:.0f}, l2={l2*1000:.0f}, l3={l3*1000:.0f}mm -> "
+    for l3, l1, l2 in test_cases:
+        pitch, roll = solve_platform_orientation(l3, l1, l2, a, b)
+        print(f"l3={l3*1000:.0f}, l1={l1*1000:.0f}, l2={l2*1000:.0f}mm -> "
               f"pitch={np.degrees(pitch):6.2f}°, roll={np.degrees(roll):6.2f}°")
 
 def visualize_workspace():
@@ -263,7 +263,7 @@ def visualize_workspace():
                     print(f"进度: {count}/{total_combinations} ({100*count/total_combinations:.1f}%), 有效解: {valid_count}")
                 
                 try:
-                    pitch, roll = solve_platform_orientation(l1, l2, l3, a, b)
+                    pitch, roll = solve_platform_orientation(l3, l1, l2, a, b)
                     
                     # 检查解是否为默认值（表示求解失败）
                     if pitch == 0.0 and roll == 0.0:
@@ -285,26 +285,26 @@ def visualize_workspace():
                         continue  # Skip points outside workspace constraints
                     
                     # 计算平台质心高度（z坐标）
-                    mass_center_z = (l1 + solve_platform_center_height(l1, l2, l3, a, b)) * 1000  # 转换为mm
+                    mass_center_z = (l3 + solve_platform_center_height(l3, l1, l2, a, b)) * 1000  # 转换为mm
                     
-                    # 计算质心与l1顶点A_prime的中点高度
-                    l1_vertex_z = l1 * 1000  # A_prime点的z坐标，转换为mm
-                    midpoint_z = (mass_center_z + l1_vertex_z) / 2
+                    # 计算质心与l3顶点A_prime的中点高度
+                    l3_vertex_z = l3 * 1000  # A_prime点的z坐标，转换为mm
+                    midpoint_z = (mass_center_z + l3_vertex_z) / 2
                     
-                    # 检查质心与l1顶点中点的高度约束 [680, 720]mm
+                    # 检查质心与l3顶点中点的高度约束 [680, 720]mm
                     if 680 <= midpoint_z <= 720:
                         pitch_values.append(pitch_deg)
                         roll_values.append(roll_deg)
-                        l1_values.append(l1 * 1000)  # convert back to mm
+                        l3_values.append(l3 * 1000)  # convert back to mm
+                        l1_values.append(l1 * 1000)
                         l2_values.append(l2 * 1000)
-                        l3_values.append(l3 * 1000)
                         mass_center_values.append(midpoint_z)  # 现在存储中点高度而不是质心高度
                         valid_count += 1
                         
                         if count <= 10:  # 打印前几个解用于调试
-                            print(f"  解: l=[{l1*1000:.0f},{l2*1000:.0f},{l3*1000:.0f}]mm -> pitch={pitch_deg:.1f}°, roll={roll_deg:.1f}°, 质心高度={mass_center_z:.0f}mm, 中点高度={midpoint_z:.0f}mm")
+                            print(f"  解: l=[{l3*1000:.0f},{l1*1000:.0f},{l2*1000:.0f}]mm -> pitch={pitch_deg:.1f}°, roll={roll_deg:.1f}°, 质心高度={mass_center_z:.0f}mm, 中点高度={midpoint_z:.0f}mm")
                     elif count <= 20:  # 打印一些被过滤的解用于调试
-                        print(f"  过滤: l=[{l1*1000:.0f},{l2*1000:.0f},{l3*1000:.0f}]mm -> 中点高度={midpoint_z:.0f}mm (超出范围)")
+                        print(f"  过滤: l=[{l3*1000:.0f},{l1*1000:.0f},{l2*1000:.0f}]mm -> 中点高度={midpoint_z:.0f}mm (超出范围)")
                 except Exception as e:
                     # 跳过无法求解的组合
                     continue

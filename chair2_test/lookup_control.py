@@ -57,11 +57,11 @@ class LookupTableController:
                 for line in f:
                     line = line.strip()
                     if line and not line.startswith('#'):
-                        # Parse: pitch(deg) roll(deg) l1(mm) l2(mm) l3(mm)
+                        # Parse: pitch(deg) roll(deg) l3(mm) l1(mm) l2(mm)
                         parts = line.split()
                         if len(parts) == 5:
-                            pitch, roll, l1, l2, l3 = map(float, parts)
-                            data.append([pitch, roll, l1, l2, l3])
+                            pitch, roll, l3, l1, l2 = map(float, parts)
+                            data.append([pitch, roll, l3, l1, l2])
             
             if not data:
                 raise ValueError("No valid data found in lookup table")
@@ -79,26 +79,26 @@ class LookupTableController:
             
             # Reshape data into 3D grid (pitch, roll, actuator_lengths)
             # Create grids for each actuator length
+            l3_grid = np.zeros((len(pitches), len(rolls)))
             l1_grid = np.zeros((len(pitches), len(rolls)))
             l2_grid = np.zeros((len(pitches), len(rolls)))
-            l3_grid = np.zeros((len(pitches), len(rolls)))
             
             for row in data:
-                pitch, roll, l1, l2, l3 = row
+                pitch, roll, l3, l1, l2 = row
                 pitch_idx = np.where(pitches == pitch)[0][0]
                 roll_idx = np.where(rolls == roll)[0][0]
+                l3_grid[pitch_idx, roll_idx] = l3
                 l1_grid[pitch_idx, roll_idx] = l1
                 l2_grid[pitch_idx, roll_idx] = l2
-                l3_grid[pitch_idx, roll_idx] = l3
             
             # Create interpolators for each actuator
             self.pitch_values = pitches
             self.roll_values = rolls
+            self.l3_interpolator = RegularGridInterpolator((pitches, rolls), l3_grid, 
+                                                          method='linear', bounds_error=False, fill_value=None)
             self.l1_interpolator = RegularGridInterpolator((pitches, rolls), l1_grid, 
                                                           method='linear', bounds_error=False, fill_value=None)
             self.l2_interpolator = RegularGridInterpolator((pitches, rolls), l2_grid, 
-                                                          method='linear', bounds_error=False, fill_value=None)
-            self.l3_interpolator = RegularGridInterpolator((pitches, rolls), l3_grid, 
                                                           method='linear', bounds_error=False, fill_value=None)
             
             print("✓ Lookup table loaded successfully with interpolation support")
@@ -118,7 +118,7 @@ class LookupTableController:
             roll_deg: Roll angle in degrees
             
         Returns:
-            tuple: (l1, l2, l3) actuator lengths in mm, or (None, None, None) if out of range
+            tuple: (l3, l1, l2) actuator lengths in mm, or (None, None, None) if out of range
         """
         # Check workspace constraints first
         if not validate_workspace_constraints(pitch_deg, roll_deg):
@@ -139,31 +139,31 @@ class LookupTableController:
         # Use interpolation to get actuator lengths
         try:
             point = np.array([[pitch_deg, roll_deg]])
+            l3 = float(self.l3_interpolator(point)[0])
             l1 = float(self.l1_interpolator(point)[0])
             l2 = float(self.l2_interpolator(point)[0])
-            l3 = float(self.l3_interpolator(point)[0])
             
-            return l1, l2, l3
+            return l3, l1, l2
             
         except Exception as e:
             print(f"Error during interpolation: {e}")
             return None, None, None
     
-    def validate_lengths(self, l1, l2, l3):
+    def validate_lengths(self, l3, l1, l2):
         """Validate that actuator lengths are within safe operating range"""
         min_length = 550.0  # mm
         max_length = 850.0  # mm
         
-        if l1 is None or l2 is None or l3 is None:
+        if l3 is None or l1 is None or l2 is None:
             return False
         
-        if (min_length <= l1 <= max_length and 
-            min_length <= l2 <= max_length and 
-            min_length <= l3 <= max_length):
+        if (min_length <= l3 <= max_length and 
+            min_length <= l1 <= max_length and 
+            min_length <= l2 <= max_length):
             return True
         else:
             print(f"Warning: Actuator lengths out of safe range [{min_length}-{max_length}mm]:")
-            print(f"  L1: {l1:.1f}mm, L2: {l2:.1f}mm, L3: {l3:.1f}mm")
+            print(f"  L3: {l3:.1f}mm, L1: {l1:.1f}mm, L2: {l2:.1f}mm")
             return False
 
 async def send_actuator_command(websocket, l1, l2, l3):
@@ -185,7 +185,7 @@ async def send_actuator_command(websocket, l1, l2, l3):
     payload_json = json.dumps(payload)
     await websocket.send(payload_json)
     
-    print(f"✓ Sent command: L1={l1:.1f}mm, L2={l2:.1f}mm, L3={l3:.1f}mm")
+    print(f"✓ Sent command: L1={l1:.1f}mm, L2={l2:.1f}mm, L2={l3:.1f}mm")
 
 def get_user_input():
     """Get pitch and roll input from user"""
@@ -252,14 +252,14 @@ async def interactive_control():
                 print(f"\nProcessing: Pitch={pitch:.1f}°, Roll={roll:.1f}°")
                 
                 # Look up actuator lengths
-                l1, l2, l3 = controller.get_actuator_lengths(pitch, roll)
+                l3, l1, l2 = controller.get_actuator_lengths(pitch, roll)
                 
-                if l1 is None:
+                if l3 is None:
                     print("❌ Could not determine actuator lengths (out of range)")
                     continue
                 
                 # Validate lengths
-                if not controller.validate_lengths(l1, l2, l3):
+                if not controller.validate_lengths(l3, l1, l2):
                     print("❌ Actuator lengths are unsafe, command not sent")
                     continue
                 
@@ -310,9 +310,9 @@ def test_lookup_functionality():
     print("-" * 80)
     
     for pitch, roll in test_cases:
-        l1, l2, l3 = controller.get_actuator_lengths(pitch, roll)
-        if l1 is not None:
-            valid = controller.validate_lengths(l1, l2, l3)
+        l3, l1, l2 = controller.get_actuator_lengths(pitch, roll)
+        if l3 is not None:
+            valid = controller.validate_lengths(l3, l1, l2)
             status = "✓ Valid" if valid else "⚠ Invalid"
             print(f"{pitch:<10.1f} {roll:<10.1f} {l1:<10.1f} {l2:<10.1f} {l3:<10.1f} {status}")
         else:
