@@ -7,6 +7,7 @@ import time
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator
 import sys
+import csv
 
 # Configuration
 WEBSOCKET_URI = "ws://192.168.4.1:81"
@@ -34,7 +35,7 @@ def validate_workspace_constraints(pitch_deg, roll_deg):
         return False
     
     # Check constraint pattern: pitch >= abs(roll) - 10
-    if pitch_deg < abs(roll_deg) - 10:
+    if pitch_deg < abs(roll_deg) - 13:
         return False
     
     return True
@@ -51,17 +52,23 @@ class LookupTableController:
         print(f"Loading lookup table from {self.table_file}...")
         
         try:
-            # Read the lookup table file
+            # Read the CSV lookup table file
             data = []
             with open(self.table_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith('#'):
-                        # Parse: pitch(deg) roll(deg) l3(mm) l1(mm) l2(mm)
-                        parts = line.split()
-                        if len(parts) == 5:
-                            pitch, roll, l3, l1, l2 = map(float, parts)
-                            data.append([pitch, roll, l3, l1, l2])
+                reader = csv.DictReader(f)
+                for row in reader:
+                    # Parse CSV: roll_deg, pitch_deg, l1, l2, l3, height
+                    # Convert to our internal format: [pitch, roll, l3, l1, l2]
+                    try:
+                        pitch = float(row['pitch_deg'])
+                        roll = float(row['roll_deg'])
+                        l1 = float(row['l1'])
+                        l2 = float(row['l2'])
+                        l3 = float(row['l3'])
+                        data.append([pitch, roll, l3, l1, l2])
+                    except (ValueError, KeyError) as e:
+                        print(f"Warning: Skipping invalid row: {row} - {e}")
+                        continue
             
             if not data:
                 raise ValueError("No valid data found in lookup table")
@@ -185,7 +192,7 @@ async def send_actuator_command(websocket, l1, l2, l3):
     payload_json = json.dumps(payload)
     await websocket.send(payload_json)
     
-    print(f"✓ Sent command: L1={l1:.1f}mm, L2={l2:.1f}mm, L2={l3:.1f}mm")
+    print(f"✓ Sent command: L1={l1:.1f}mm, L2={l2:.1f}mm, L3={l3:.1f}mm")
 
 def get_user_input():
     """Get pitch and roll input from user"""
