@@ -151,11 +151,11 @@ def simplified_inverse_kinematics(target_pitch, target_roll, a, b):
     neutral_l1 = 0.735  # 735mm
     neutral_l2 = 0.735  # 735mm
     
-    # 基于实际测量数据的响应系数（需要通过校准确定）
-    # 这些系数基于小角度近似和用户的系统特性
-    pitch_sensitivity = 0.008  # m/rad，pitch对l3的影响
-    roll_sensitivity_l1 = -0.008  # m/rad，roll对l1的影响
-    roll_sensitivity_l2 = 0.008   # m/rad，roll对l2的影响
+    # 基于实际测量数据的响应系数（修正后的值）
+    # 这些系数基于Stewart平台几何特性和实际尺寸
+    pitch_sensitivity = 0.096  # m/rad，pitch对l3的影响 (corrected: was 0.008, too small)
+    roll_sensitivity_l1 = -0.096  # m/rad，roll对l1的影响 (corrected: was -0.008, too small)
+    roll_sensitivity_l2 = 0.096   # m/rad，roll对l2的影响 (corrected: was 0.008, too small)
     
     # 计算各杆长度
     l3 = neutral_l3 + corrected_pitch * pitch_sensitivity
