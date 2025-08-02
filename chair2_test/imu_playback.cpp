@@ -22,7 +22,7 @@ const float armRadius = 200.0;  // mm - radius from center to actuator mount
 
 // -- Lookup Table Configuration
 const char* LOOKUP_TABLE_FILE = "/lookup_table.txt";
-const int MAX_LOOKUP_ENTRIES = 4000;  // Maximum number of entries to load
+const int MAX_LOOKUP_ENTRIES = 2000;  // Reduced to prevent memory issues
 
 // -- Workspace Constraints (matching Python validation)
 const float PITCH_MIN = -10.0;   // degrees
@@ -104,26 +104,26 @@ void setup() {
   delay(1000);
   debugPrint("\n==== Stewart Platform Playback Firmware (main2.cpp) ====");
 
-  // Initialize SPIFFS for file system access
+  // Initialize motor drivers and PWM from pin_definitions.cpp first
+  initializePins();
+  setupPWM();
+  stopAllMotors();
+  debugPrint("[✓] Motor drivers initialized");
+
+  // Initialize SPIFFS for file system access after motor setup
   if (!SPIFFS.begin(true)) {
     debugPrint("[!] SPIFFS mount failed");
     // Continue without lookup table - will use fallback
   } else {
     debugPrint("[✓] SPIFFS mounted");
     
-    // Load lookup table
+    // Load lookup table after basic initialization is complete
     if (loadLookupTable()) {
       debugPrint("[✓] Lookup table loaded successfully");
     } else {
       debugPrint("[!] Failed to load lookup table - using mathematical fallback");
     }
   }
-
-  // Initialize motor drivers and PWM from pin_definitions.cpp
-  initializePins();
-  setupPWM();
-  stopAllMotors();
-  debugPrint("[✓] Motor drivers initialized");
 
   // Start Wi-Fi Access Point
   if (WiFi.softAP(ssid, password)) {
@@ -406,6 +406,7 @@ float stepTowards(float current, float target, float maxStep) {
 
 bool loadLookupTable() {
   debugPrint("[*] Loading lookup table from SPIFFS...");
+  debugPrintf("[*] Free heap before loading: %d bytes", ESP.getFreeHeap());
   
   File file = SPIFFS.open(LOOKUP_TABLE_FILE, "r");
   if (!file) {
@@ -438,6 +439,11 @@ bool loadLookupTable() {
     
     // Skip empty lines
     if (line.length() == 0) continue;
+    
+    // Yield periodically to prevent watchdog timeout
+    if (lineCount % 100 == 0) {
+      yield();
+    }
     
     // Parse CSV line: roll_deg,pitch_deg,l1,l2,l3,height
     int commaIndices[5];
@@ -484,8 +490,20 @@ bool loadLookupTable() {
   debugPrintf("[✓] Loaded %d lookup table entries", lookupTableSize);
   
   // Extract unique pitch and roll values for interpolation
-  // This is a simplified approach - assumes data is gridded
-  float pitches[1000], rolls[1000];
+  // Use dynamic allocation to avoid stack overflow
+  const int MAX_UNIQUE_VALUES = 200; // Reduced from 1000 to be more reasonable
+  float* pitches = (float*)malloc(MAX_UNIQUE_VALUES * sizeof(float));
+  float* rolls = (float*)malloc(MAX_UNIQUE_VALUES * sizeof(float));
+  
+  if (!pitches || !rolls) {
+    debugPrint("[!] Failed to allocate memory for unique value extraction");
+    if (pitches) free(pitches);
+    if (rolls) free(rolls);
+    free(lookupTable);
+    lookupTable = nullptr;
+    return false;
+  }
+  
   int pitchCount = 0, rollCount = 0;
   
   // Find unique pitches
@@ -498,7 +516,7 @@ bool loadLookupTable() {
         break;
       }
     }
-    if (!found && pitchCount < 1000) {
+    if (!found && pitchCount < MAX_UNIQUE_VALUES) {
       pitches[pitchCount++] = pitch;
     }
   }
@@ -513,7 +531,7 @@ bool loadLookupTable() {
         break;
       }
     }
-    if (!found && rollCount < 1000) {
+    if (!found && rollCount < MAX_UNIQUE_VALUES) {
       rolls[rollCount++] = roll;
     }
   }
@@ -545,6 +563,13 @@ bool loadLookupTable() {
   
   if (!uniquePitches || !uniqueRolls) {
     debugPrint("[!] Failed to allocate memory for unique values");
+    // Clean up temporary arrays before returning
+    free(pitches);
+    free(rolls);
+    if (uniquePitches) free(uniquePitches);
+    if (uniqueRolls) free(uniqueRolls);
+    free(lookupTable);
+    lookupTable = nullptr;
     return false;
   }
   
@@ -553,10 +578,16 @@ bool loadLookupTable() {
   numPitches = pitchCount;
   numRolls = rollCount;
   
+  // Clean up temporary arrays
+  free(pitches);
+  free(rolls);
+  
   debugPrintf("[✓] Pitch range: [%.1f°, %.1f°] with %d points", 
               uniquePitches[0], uniquePitches[numPitches-1], numPitches);
   debugPrintf("[✓] Roll range: [%.1f°, %.1f°] with %d points", 
               uniqueRolls[0], uniqueRolls[numRolls-1], numRolls);
+  
+  debugPrintf("[*] Free heap after loading: %d bytes", ESP.getFreeHeap());
   
   lookupTableLoaded = true;
   return true;
