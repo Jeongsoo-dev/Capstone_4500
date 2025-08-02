@@ -90,7 +90,7 @@ float stepTowards(float current, float target, float maxStep);
 // Lookup table functions
 bool loadLookupTable();
 bool validateWorkspaceConstraints(float pitch_deg, float roll_deg);
-bool getActuatorLengthsFromLookup(float pitch_deg, float roll_deg, float& l1, float& l2, float& l3);
+bool getActuatorLengthsFromLookup(float pitch_deg, float roll_deg, float& l1, float& l2, float& l3); // Now clamps input values automatically
 bool validateActuatorLengths(float l1, float l2, float l3);
 float bilinearInterpolate(float x, float y, float x1, float y1, float x2, float y2, 
                          float f11, float f12, float f21, float f22);
@@ -280,13 +280,13 @@ void onWebSocketEvent(uint8_t client, WStype_t type, uint8_t *payload, size_t le
 
       // --- Compute Target Actuator Lengths ---
       
-      // Try lookup table first, fall back to mathematical model if needed
+      // Always try lookup table first with clamping for continuous movement
       float lookup_l1, lookup_l2, lookup_l3;
       bool lookupSuccess = false;
       
       if (lookupTableLoaded) {
-        // Use lookup table for precise positioning without heave for now
-        // (heave will be added as offset later)
+        // Use lookup table with automatic clamping for continuous movement
+        // Values will be clamped to valid workspace instead of rejected
         lookupSuccess = getActuatorLengthsFromLookup(pitch_with_cue, roll_with_cue, 
                                                     lookup_l1, lookup_l2, lookup_l3);
       }
@@ -302,8 +302,9 @@ void onWebSocketEvent(uint8_t client, WStype_t type, uint8_t *payload, size_t le
           targetLength[i] = constrain(targetLength[i], minLength, maxLength);
         }
       } else {
-        // Fallback to mathematical computation
-        debugPrint("[*] Using mathematical fallback for actuator computation");
+        // Only fallback to mathematical computation if lookup table failed to load
+        // or had a serious error (not just out-of-range values)
+        debugPrint("[!] Lookup table unavailable - using mathematical fallback");
         for (int i = 0; i < 3; i++) {
           targetLength[i] = computeActuatorLength(pitch_with_cue, roll_with_cue, heave_offset, actuatorAngles[i]);
         }
@@ -634,18 +635,39 @@ bool getActuatorLengthsFromLookup(float pitch_deg, float roll_deg, float& l1, fl
     return false;
   }
   
-  // Validate workspace constraints
-  if (!validateWorkspaceConstraints(pitch_deg, roll_deg)) {
-    debugPrintf("[!] Input (%.1f°, %.1f°) violates workspace constraints", pitch_deg, roll_deg);
-    return false;
+  // Clamp values to workspace constraints instead of rejecting them
+  float clamped_pitch = pitch_deg;
+  float clamped_roll = roll_deg;
+  
+  // Clamp to basic pitch/roll ranges
+  clamped_pitch = constrain(clamped_pitch, PITCH_MIN, PITCH_MAX);
+  clamped_roll = constrain(clamped_roll, ROLL_MIN, ROLL_MAX);
+  
+  // Apply constraint: pitch >= abs(roll) - 13
+  // If pitch is too low for the given roll, increase pitch to minimum allowed
+  float min_pitch_for_roll = abs(clamped_roll) - 13.0;
+  if (clamped_pitch < min_pitch_for_roll) {
+    clamped_pitch = min_pitch_for_roll;
+    // Re-clamp pitch to stay within absolute limits
+    clamped_pitch = constrain(clamped_pitch, PITCH_MIN, PITCH_MAX);
   }
   
-  // Check if values are within lookup table range
-  if (pitch_deg < uniquePitches[0] || pitch_deg > uniquePitches[numPitches-1] ||
-      roll_deg < uniqueRolls[0] || roll_deg > uniqueRolls[numRolls-1]) {
-    debugPrintf("[!] Input (%.1f°, %.1f°) outside lookup table range", pitch_deg, roll_deg);
-    return false;
+  // Clamp to lookup table range
+  clamped_pitch = constrain(clamped_pitch, uniquePitches[0], uniquePitches[numPitches-1]);
+  clamped_roll = constrain(clamped_roll, uniqueRolls[0], uniqueRolls[numRolls-1]);
+  
+  // Log if significant clamping occurred (for debugging, but not too frequently)
+  static unsigned long lastClampLog = 0;
+  if ((abs(clamped_pitch - pitch_deg) > 0.5 || abs(clamped_roll - roll_deg) > 0.5) && 
+      (millis() - lastClampLog > 1000)) { // Log max once per second
+    debugPrintf("[*] Clamped (%.1f°, %.1f°) → (%.1f°, %.1f°)", 
+                pitch_deg, roll_deg, clamped_pitch, clamped_roll);
+    lastClampLog = millis();
   }
+  
+  // Use clamped values for lookup
+  pitch_deg = clamped_pitch;
+  roll_deg = clamped_roll;
   
   // Find bounding grid points
   int pitch_i1 = 0, pitch_i2 = 0;
