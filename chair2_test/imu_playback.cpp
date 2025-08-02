@@ -37,11 +37,17 @@ const float actuatorSpeed = 84.0; // mm/s - max actuator speed at 100% duty cycl
 const int updateInterval = 10;  // ms - control loop interval (100 Hz)
 
 // -- Motion Cueing Factors
-// How much vertical heave to apply based on Z acceleration
-const float heaveScaleFactor = 20.0; // mm of heave per G of acceleration
+// Heave disabled - focusing only on pitch and roll
+// const float heaveScaleFactor = 20.0; // mm of heave per G of acceleration (DISABLED)
 // How much to tilt based on angular velocity (for fast motion cues)
 const float pitchCueFactor = 0.1; // degrees of extra pitch per °/s
 const float rollCueFactor = 0.1;  // degrees of extra roll per °/s
+
+// -- Smoothing Parameters
+const float IMU_SMOOTHING_FACTOR = 0.3; // Low-pass filter strength (0.1-0.3, lower = smoother)
+const float TARGET_RATE_LIMIT = 2.0; // mm/s max rate of target change
+const float DEADBAND_THRESHOLD = 0.5; // mm - ignore changes smaller than this
+const float REDUCED_GAIN = 4.0; // Reduced from 8.0 for smoother response
 
 // =============================================================================
 // LOOKUP TABLE STRUCTURES
@@ -78,11 +84,21 @@ int numPitches = 0;
 int numRolls = 0;
 bool lookupTableLoaded = false;
 
+// -- Smoothing Variables
+float filteredPitch = 0.0;
+float filteredRoll = 0.0;
+// float filteredAccZ = 9.81; // Removed - heave disabled
+float filteredAngVelX = 0.0;
+float filteredAngVelY = 0.0;
+float previousTargets[3] = {neutralLength[0], neutralLength[1], neutralLength[2]};
+unsigned long lastIMUTime = 0;
+bool smoothingInitialized = false;
+
 // =============================================================================
 // FUNCTION DECLARATIONS
 // =============================================================================
 void onWebSocketEvent(uint8_t client, WStype_t type, uint8_t *payload, size_t length);
-float computeActuatorLength(float pitchDeg, float rollDeg, float heave, float angleDeg);
+float computeActuatorLength(float pitchDeg, float rollDeg, float angleDeg); // Removed heave parameter
 void updateActuatorsSmoothly();
 float stepTowards(float current, float target, float maxStep);
 // Motor control functions are now in pin_definitions.cpp/h
@@ -95,6 +111,10 @@ bool validateActuatorLengths(float l1, float l2, float l3);
 float bilinearInterpolate(float x, float y, float x1, float y1, float x2, float y2, 
                          float f11, float f12, float f21, float f22);
 void cleanupLookupTable();
+
+// Smoothing functions
+void applyIMUSmoothing(float& pitch, float& roll, float& ang_vel_x, float& ang_vel_y); // Removed acc_z - heave disabled
+void applyTargetRateLimiting(float newTargets[3], float previousTargets[3], float maxRate_mm_per_s, float deltaTime_s);
 
 // =============================================================================
 // SETUP
@@ -258,21 +278,22 @@ void onWebSocketEvent(uint8_t client, WStype_t type, uint8_t *payload, size_t le
       float pitch = motion["orientation"]["pitch"];
       float roll = motion["orientation"]["roll"];
       
-      float acc_x = motion["acceleration"]["x"];
-      float acc_y = motion["acceleration"]["y"];
-      float acc_z = motion["acceleration"]["z"];
+      // Note: Acceleration data no longer used (heave disabled)
+      // float acc_x = motion["acceleration"]["x"];
+      // float acc_y = motion["acceleration"]["y"];
+      // float acc_z = motion["acceleration"]["z"];
       
       float ang_vel_x = motion["angular_velocity"]["x"];
       float ang_vel_y = motion["angular_velocity"]["y"];
 
+      // --- Apply IMU Smoothing ---
+      applyIMUSmoothing(pitch, roll, ang_vel_x, ang_vel_y);
+
       // --- Calculate Motion Components ---
       
-      // 1. Heave (Vertical Motion) from Z-axis acceleration
-      // Subtract gravity (9.81 m/s^2) to get net vertical acceleration
-      float vertical_accel_ms2 = acc_z - 9.81; 
-      float heave_offset = vertical_accel_ms2 * heaveScaleFactor;
-
-      // 2. Motion Cueing from Angular Velocity
+      // Heave (vertical motion) disabled - focusing only on pitch and roll
+      
+      // Motion Cueing from Angular Velocity
       // Add a small, temporary tilt based on how fast the IMU is rotating.
       // This creates a sensation of faster movement.
       float pitch_with_cue = pitch + (ang_vel_y * pitchCueFactor);
@@ -291,27 +312,46 @@ void onWebSocketEvent(uint8_t client, WStype_t type, uint8_t *payload, size_t le
                                                     lookup_l1, lookup_l2, lookup_l3);
       }
       
+      // Store current time for rate limiting
+      unsigned long currentTime = millis();
+      float deltaTime_s = (currentTime - lastIMUTime) / 1000.0;
+      lastIMUTime = currentTime;
+      
+      // Calculate new target lengths
+      float newTargets[3];
+      
       if (lookupSuccess) {
-        // Use lookup table results and add heave offset
-        targetLength[0] = lookup_l1 + heave_offset;  // Motor 1 (l1)
-        targetLength[1] = lookup_l2 + heave_offset;  // Motor 2 (l2)
-        targetLength[2] = lookup_l3 + heave_offset;  // Motor 3 (l3)
+        // Use lookup table results directly (no heave offset)
+        newTargets[0] = lookup_l1;  // Motor 1 (l1)
+        newTargets[1] = lookup_l2;  // Motor 2 (l2)
+        newTargets[2] = lookup_l3;  // Motor 3 (l3)
         
         // Ensure within physical limits
         for (int i = 0; i < 3; i++) {
-          targetLength[i] = constrain(targetLength[i], minLength, maxLength);
+          newTargets[i] = constrain(newTargets[i], minLength, maxLength);
         }
       } else {
         // Only fallback to mathematical computation if lookup table failed to load
         // or had a serious error (not just out-of-range values)
         debugPrint("[!] Lookup table unavailable - using mathematical fallback");
         for (int i = 0; i < 3; i++) {
-          targetLength[i] = computeActuatorLength(pitch_with_cue, roll_with_cue, heave_offset, actuatorAngles[i]);
+          newTargets[i] = computeActuatorLength(pitch_with_cue, roll_with_cue, actuatorAngles[i]);
         }
       }
       
+      // Apply rate limiting for smoother movement
+      if (deltaTime_s > 0 && deltaTime_s < 1.0) { // Valid time delta
+        applyTargetRateLimiting(newTargets, previousTargets, TARGET_RATE_LIMIT, deltaTime_s);
+      }
+      
+      // Update target lengths with smoothed values
+      for (int i = 0; i < 3; i++) {
+        targetLength[i] = newTargets[i];
+        previousTargets[i] = newTargets[i];
+      }
+      
       // Optional: Log received data to serial for debugging
-      // debugPrintf("P:%.1f R:%.1f | H:%.1f | T:%.1f,%.1f,%.1f", pitch, roll, heave_offset, targetLength[0], targetLength[1], targetLength[2]);
+      // debugPrintf("P:%.1f R:%.1f | T:%.1f,%.1f,%.1f", pitch, roll, targetLength[0], targetLength[1], targetLength[2]);
 
       // Acknowledge receipt (optional, can be disabled for performance)
       // webSocket.sendTXT(client, "{\"status\":\"ok\"}");
@@ -326,9 +366,10 @@ void onWebSocketEvent(uint8_t client, WStype_t type, uint8_t *payload, size_t le
 // =============================================================================
 // STEWART PLATFORM KINEMATICS
 // =============================================================================
-// Computes the required length of an actuator based on platform tilt and heave.
+// Computes the required length of an actuator based on platform tilt only.
 // This is the mathematical fallback when lookup table is not available
-float computeActuatorLength(float pitchDeg, float rollDeg, float heave, float angleDeg) {
+// Heave disabled - focusing only on pitch and roll
+float computeActuatorLength(float pitchDeg, float rollDeg, float angleDeg) {
   float pitchRad = radians(pitchDeg);
   float rollRad = radians(rollDeg);
   float angleRad = radians(angleDeg);
@@ -340,8 +381,8 @@ float computeActuatorLength(float pitchDeg, float rollDeg, float heave, float an
   // For this mathematical approximation, we'll use a weighted average of neutral lengths
   float baseLength = (neutralLength[0] + neutralLength[1] + neutralLength[2]) / 3.0;
   
-  // Calculate final target length including base position, tilt, and heave
-  float target = baseLength + dz + heave;
+  // Calculate final target length including base position and tilt (no heave)
+  float target = baseLength + dz;
 
   // Ensure the target length is within the physical limits of the actuator
   return constrain(target, minLength, maxLength);
@@ -361,9 +402,8 @@ void updateActuatorsSmoothly() {
     float maxAllowedSpeed = actuatorSpeed; // 84 mm/s at 100% duty cycle (PWM 255)
     float desiredSpeed_mmPerSec;
     
-    // Proportional control with saturation
-    const float proportionalGain = 8.0; // Adjust this for responsiveness vs stability
-    desiredSpeed_mmPerSec = positionError * proportionalGain;
+    // Proportional control with saturation (reduced gain for smoother response)
+    desiredSpeed_mmPerSec = positionError * REDUCED_GAIN;
     
     // Limit to maximum actuator speed
     desiredSpeed_mmPerSec = constrain(desiredSpeed_mmPerSec, -maxAllowedSpeed, maxAllowedSpeed);
@@ -761,4 +801,61 @@ void cleanupLookupTable() {
   numPitches = 0;
   numRolls = 0;
   lookupTableLoaded = false;
+}
+
+// =============================================================================
+// SMOOTHING FUNCTIONS
+// =============================================================================
+
+void applyIMUSmoothing(float& pitch, float& roll, float& ang_vel_x, float& ang_vel_y) {
+  // Initialize smoothing on first call
+  if (!smoothingInitialized) {
+    filteredPitch = pitch;
+    filteredRoll = roll;
+    // filteredAccZ removed - heave disabled
+    filteredAngVelX = ang_vel_x;
+    filteredAngVelY = ang_vel_y;
+    smoothingInitialized = true;
+    debugPrint("[*] IMU smoothing initialized (pitch/roll focus)");
+    return;
+  }
+  
+  // Apply low-pass filtering (exponential moving average)
+  // New_value = alpha * raw_value + (1-alpha) * previous_filtered_value
+  filteredPitch = IMU_SMOOTHING_FACTOR * pitch + (1.0 - IMU_SMOOTHING_FACTOR) * filteredPitch;
+  filteredRoll = IMU_SMOOTHING_FACTOR * roll + (1.0 - IMU_SMOOTHING_FACTOR) * filteredRoll;
+  // filteredAccZ removed - heave disabled
+  filteredAngVelX = IMU_SMOOTHING_FACTOR * ang_vel_x + (1.0 - IMU_SMOOTHING_FACTOR) * filteredAngVelX;
+  filteredAngVelY = IMU_SMOOTHING_FACTOR * ang_vel_y + (1.0 - IMU_SMOOTHING_FACTOR) * filteredAngVelY;
+  
+  // Update input values with filtered values
+  pitch = filteredPitch;
+  roll = filteredRoll;
+  // acc_z removed - heave disabled
+  ang_vel_x = filteredAngVelX;
+  ang_vel_y = filteredAngVelY;
+}
+
+void applyTargetRateLimiting(float newTargets[3], float previousTargets[3], float maxRate_mm_per_s, float deltaTime_s) {
+  // Limit how fast targets can change to prevent jerky movement
+  float maxChange_mm = maxRate_mm_per_s * deltaTime_s;
+  
+  for (int i = 0; i < 3; i++) {
+    float targetChange = newTargets[i] - previousTargets[i];
+    
+    // Apply deadband - ignore very small changes to reduce noise
+    if (abs(targetChange) < DEADBAND_THRESHOLD) {
+      newTargets[i] = previousTargets[i]; // No change
+      continue;
+    }
+    
+    // Rate limit the target change
+    if (abs(targetChange) > maxChange_mm) {
+      if (targetChange > 0) {
+        newTargets[i] = previousTargets[i] + maxChange_mm;
+      } else {
+        newTargets[i] = previousTargets[i] - maxChange_mm;
+      }
+    }
+  }
 } 
