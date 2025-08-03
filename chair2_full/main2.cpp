@@ -43,11 +43,9 @@ const float DEADBAND_THRESHOLD = 0.1; // mm - ignore changes smaller than this (
 const float REDUCED_GAIN = 4.0; // Reduced gain for smoother response
 
 // -- Advanced Motion Control Parameters (TEMPORARILY DISABLED FOR DEBUG)
-const bool ENABLE_DATA_RATE_LIMITING = false;   // Limit IMU data processing rate (DISABLED)
-const unsigned long IMU_DATA_INTERVAL_MS = 50;  // Process IMU data max every 50ms (20Hz)
-const bool ENABLE_SEQUENTIAL_TARGETING = false; // Wait for actuators to reach target before new targets (DISABLED)
-const float TARGET_REACHED_TOLERANCE = 2.0;     // mm - tolerance for "target reached"
-const bool ENABLE_REAL_TIME_TRACKING = true;    // Improved position tracking with load compensation
+const bool ENABLE_DATA_RATE_LIMITING = false;  // Disabled when sequential targeting is active (incompatible)
+const unsigned long IMU_DATA_INTERVAL_MS = 500;  // Process IMU data max every 500ms (2Hz)
+const bool ENABLE_SEQUENTIAL_TARGETING = true;   // Individual actuators wait to reach target before accepting new ones
 
 // -- Lookup Table Configuration
 const char* LOOKUP_TABLE_FILE = "/lookup_table.txt";
@@ -141,8 +139,7 @@ bool smoothingInitialized = false;
 // -- Advanced Motion Control Variables
 unsigned long lastIMUProcessTime = 0;     // For data rate limiting
 bool targetsReached[3] = {true, true, true}; // Track if each actuator reached target
-float estimatedLength[3] = {neutralLength[0], neutralLength[1], neutralLength[2]}; // Real-time position estimate
-float loadCompensation[3] = {0.0, 0.0, 0.0}; // Load-based position correction
+
 
 // -- IMU Data
 IMUData imuData;
@@ -181,8 +178,8 @@ void applyTargetRateLimiting(float newTargets[3], float previousTargets[3], floa
 
 // Advanced motion control functions
 bool shouldProcessIMUData();          // Data rate limiting
-bool allTargetsReached();             // Sequential targeting check
-void updateRealTimeTracking();        // Improved position tracking
+bool allTargetsReached();             // Status display helper
+
 void updateTargetReachedStatus();     // Update target reached flags
 
 // Stewart platform kinematics
@@ -190,7 +187,7 @@ float computeActuatorLength(float pitchDeg, float rollDeg, float angleDeg); // M
 
 // Motor control
 void updateActuatorsSmoothly();
-float stepTowards(float current, float target, float maxStep);
+
 
 // =============================================================================
 // BLE CALLBACK CLASSES (using regular BLE instead of NimBLE)
@@ -300,10 +297,11 @@ void loop() {
     
     // Show advanced motion control status
     if (systemHomed) {
-      debugPrintf("Motion - DataLimit: %s | Sequential: %s | AllReached: %s", 
+      debugPrintf("Motion - DataLimit: %s | Sequential: %s | AllReached: %s%s", 
                   ENABLE_DATA_RATE_LIMITING ? "ON" : "OFF",
                   ENABLE_SEQUENTIAL_TARGETING ? "ON" : "OFF", 
-                  allTargetsReached() ? "YES" : "NO");
+                  allTargetsReached() ? "YES" : "NO",
+                  (ENABLE_DATA_RATE_LIMITING && ENABLE_SEQUENTIAL_TARGETING) ? " [CONFLICT!]" : "");
     }
     
     lastStatusTime = millis();
@@ -349,10 +347,7 @@ void loop() {
   if (systemHomed) {
     unsigned long now = millis();
     if (now - lastUpdate >= updateInterval) {
-      // Update real-time position tracking
-      if (ENABLE_REAL_TIME_TRACKING) {
-        updateRealTimeTracking();
-      }
+
       
       // Update target reached status
       updateTargetReachedStatus();
@@ -683,17 +678,17 @@ void processIMUData() {
   if (!imuData.dataValid) return;
   
   // 1. Data Rate Limiting - only process at maximum specified rate
+  // NOTE: Incompatible with sequential targeting - either use one or the other
   if (ENABLE_DATA_RATE_LIMITING && !shouldProcessIMUData()) {
     debugPrint("[DEBUG] IMU processing skipped: Data rate limiting active");
     return; // Skip this data point
   }
-  lastIMUProcessTime = millis();
-  
-  // 2. Sequential Targeting - only accept new targets when current ones are reached
-  if (ENABLE_SEQUENTIAL_TARGETING && !allTargetsReached()) {
-    debugPrint("[DEBUG] IMU processing skipped: Waiting for targets to be reached");
-    return; // Wait for current targets to be reached
+  if (ENABLE_DATA_RATE_LIMITING) {
+    lastIMUProcessTime = millis();
   }
+  
+  // 2. Sequential Targeting - process IMU but only update individual actuators that have reached targets
+  // (No longer blocks entire IMU processing - handles per-actuator in the lookup/targeting logic)
   
   // Extract raw IMU values
   float pitch = imuData.pitch;
@@ -761,9 +756,17 @@ void processIMUData() {
               previousTargets[0], previousTargets[1], previousTargets[2]);
   
   // Update target lengths with smoothed values
+  // With sequential targeting, only update individual actuators that have reached their current targets
   for (int i = 0; i < 3; i++) {
-    targetLength[i] = newTargets[i];
-    previousTargets[i] = newTargets[i];
+    if (!ENABLE_SEQUENTIAL_TARGETING || targetsReached[i]) {
+      // Either sequential targeting is disabled, or this actuator has reached its target
+      targetLength[i] = newTargets[i];
+      previousTargets[i] = newTargets[i];
+    } else {
+      // Sequential targeting enabled and actuator hasn't reached target - keep current target
+      debugPrintf("[DEBUG] Actuator %d still moving (%.1fmm->%.1fmm), keeping current target", 
+                  i + 1, currentLength[i], targetLength[i]);
+    }
   }
   
   // Debug: Show final targets after rate limiting
@@ -1220,74 +1223,24 @@ bool allTargetsReached() {
 }
 
 void updateTargetReachedStatus() {
-  // Update the target reached status for each actuator
+  // Update the target reached status for each actuator using the same logic as precision stop
   for (int i = 0; i < 3; i++) {
-    float error = abs(targetLength[i] - estimatedLength[i]);
-    targetsReached[i] = (error <= TARGET_REACHED_TOLERANCE);
+    targetsReached[i] = (abs(targetLength[i] - currentLength[i]) < 0.5); // Same as precision stop threshold
   }
   
-  // Debug output when targets are reached
-  static bool lastAllReached = true;
-  bool currentAllReached = allTargetsReached();
-  if (!lastAllReached && currentAllReached) {
-    debugPrint("[*] All actuator targets reached - ready for new commands");
-  } else if (lastAllReached && !currentAllReached) {
-    debugPrint("[*] Actuators moving to new targets...");
+  // Debug output when individual targets are reached
+  static bool lastReached[3] = {false, false, false};
+  for (int i = 0; i < 3; i++) {
+    if (!lastReached[i] && targetsReached[i]) {
+      debugPrintf("[*] Actuator %d reached target - ready for new commands", i + 1);
+    } else if (lastReached[i] && !targetsReached[i]) {
+      debugPrintf("[*] Actuator %d moving to new target...", i + 1);
+    }
+    lastReached[i] = targetsReached[i];
   }
-  lastAllReached = currentAllReached;
 }
 
-void updateRealTimeTracking() {
-  // Improved real-time position tracking with load compensation
-  static unsigned long lastTrackingUpdate = 0;
-  unsigned long currentTime = millis();
-  float deltaTime_s = (currentTime - lastTrackingUpdate) / 1000.0;
-  
-  if (lastTrackingUpdate == 0) {
-    lastTrackingUpdate = currentTime;
-    return;
-  }
-  
-  for (int i = 0; i < 3; i++) {
-    // Calculate expected movement based on current motor command
-    float positionError = targetLength[i] - currentLength[i];
-    float desiredSpeed_mmPerSec = constrain(positionError * REDUCED_GAIN, -actuatorSpeed, actuatorSpeed);
-    float expectedMovement = desiredSpeed_mmPerSec * deltaTime_s;
-    
-    // Update estimated position
-    estimatedLength[i] = currentLength[i] + expectedMovement;
-    
-    // Simple load compensation - if actuator is struggling to move, reduce expected speed
-    float targetError = abs(targetLength[i] - estimatedLength[i]);
-    if (targetError > TARGET_REACHED_TOLERANCE * 2) {
-      // Actuator seems to be lagging - possibly due to load
-      loadCompensation[i] += 0.1 * deltaTime_s; // Gradually increase compensation
-      loadCompensation[i] = constrain(loadCompensation[i], 0.0, 0.5); // Max 50% reduction
-    } else {
-      // Actuator is keeping up - reduce compensation
-      loadCompensation[i] -= 0.2 * deltaTime_s; // Reduce compensation faster
-      loadCompensation[i] = constrain(loadCompensation[i], 0.0, 0.5);
-    }
-    
-    // Apply load compensation to estimated position
-    float compensationFactor = 1.0 - loadCompensation[i];
-    estimatedLength[i] = currentLength[i] + (expectedMovement * compensationFactor);
-    
-    // Keep estimated length within physical limits
-    estimatedLength[i] = constrain(estimatedLength[i], minLength, maxLength);
-  }
-  
-  // Optional: Log tracking info periodically
-  static unsigned long lastTrackingLog = 0;
-  if (currentTime - lastTrackingLog > 2000) { // Every 2 seconds
-    debugPrintf("[TRACK] Est: %.1f,%.1f,%.1f | Load: %.2f,%.2f,%.2f", 
-                estimatedLength[0], estimatedLength[1], estimatedLength[2],
-                loadCompensation[0], loadCompensation[1], loadCompensation[2]);
-    lastTrackingLog = currentTime;
-  }
-  
-  lastTrackingUpdate = currentTime;
-}
+
 
 // =============================================================================
 // STEWART PLATFORM KINEMATICS
@@ -1359,10 +1312,3 @@ void updateActuatorsSmoothly() {
   }
 }
 
-// Helper function to move a value towards a target by a maximum step.
-float stepTowards(float current, float target, float maxStep) {
-  if (abs(target - current) <= maxStep) {
-    return target;
-  }
-  return current + (target > current ? maxStep : -maxStep);
-}
