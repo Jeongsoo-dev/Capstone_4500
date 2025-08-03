@@ -39,7 +39,7 @@ const float rollCueFactor = 0.1;  // degrees of extra roll per °/s
 // -- Smoothing Parameters
 const float IMU_SMOOTHING_FACTOR = 0.3; // Low-pass filter strength (user adjusted)
 const float TARGET_RATE_LIMIT = 20.0; // mm/s max rate of target change (INCREASED FOR DEBUG)
-const float DEADBAND_THRESHOLD = 0.1; // mm - ignore changes smaller than this (REDUCED FOR DEBUG)
+const float DEADBAND_THRESHOLD = 0.5; // mm - ignore changes smaller than this (reasonable for IMU noise)
 const float REDUCED_GAIN = 4.0; // Reduced gain for smoother response
 
 // -- Advanced Motion Control Parameters (TEMPORARILY DISABLED FOR DEBUG)
