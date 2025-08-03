@@ -150,11 +150,6 @@ void loop() {
       NimBLEDevice::deleteClient(pClient);
       pClient = nullptr;
     }
-    // Clean up target device on timeout
-    if (targetDevice != nullptr) {
-      delete targetDevice;
-      targetDevice = nullptr;
-    }
   }
   
   // Handle BLE connection state with retry delay
@@ -220,13 +215,16 @@ void scanForIMU() {
   pScan->setActiveScan(true);
   
   // Start scan 
-  bool scanStarted = pScan->start(5000, true); // Scan for 5 seconds (BLOCKING)
+  bool scanStarted = pScan->start(5000, false); // Scan for 5 seconds
   
   // Scan completed
   NimBLEScanResults results = pScan->getResults();
   debugPrintf("Scan completed. Found %d devices total", results.getCount());
   
   // Check if we found our target device
+  debugPrintf("Post-scan check: deviceFound=%s, targetDevice=%s", 
+              deviceFound ? "true" : "false", 
+              targetDevice ? "valid" : "null");
   if (deviceFound && targetDevice != nullptr) {
     debugPrint("Target device found, attempting connection...");
     
@@ -259,11 +257,6 @@ void scanForIMU() {
       // Clean up failed client
       NimBLEDevice::deleteClient(pClient);
       pClient = nullptr;
-      // Clean up target device on failed connection
-      if (targetDevice != nullptr) {
-        delete targetDevice;
-        targetDevice = nullptr;
-      }
     }
   } else {
     bleConnecting = false;
