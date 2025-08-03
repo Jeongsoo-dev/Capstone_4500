@@ -1,55 +1,85 @@
 #include <Arduino.h>
-#include <BLEDevice.h>
-#include <BLEClient.h>
-#include <BLEUtils.h>
-#include <BLEScan.h>
-#include <BLEAdvertisedDevice.h>
-
-// Include pin definitions
+#include <NimBLEDevice.h>
+#include <FS.h>
+#include <SPIFFS.h>
 #include "pin_definitions.h"
 
 // =============================================================================
-// STEWART PLATFORM CONFIGURATION
+// STEWART PLATFORM REALTIME IMU CONTROL - FINAL VERSION
 // =============================================================================
+// Integrates:
+// - NimBLE IMU connectivity 
+// - Lookup table with bilinear interpolation
+// - Smoothing and rate limiting for smooth motion
+// - Focus on pitch/roll only (no heave)
+// - UART0 debugging
+
+// =============================================================================
+// CONFIGURATION
+// =============================================================================
+// -- Stewart Platform Physical Dimensions
 const int minLength = 550;      // mm - minimum actuator length
 const int maxLength = 850;      // mm - maximum actuator length
-const int homeLength = 700;     // mm - neutral/level position
-const float actuatorSpeed = 84.0; // mm/s - actuator movement speed
+// Neutral state lengths based on corrected mathematical model [[memory:4862545]]
+const int neutralLength[3] = {735, 735, 670}; // mm - Motor 1(l1), Motor 2(l2), Motor 3(l3)
 const float armRadius = 200.0;  // mm - radius from center to actuator mount
-const int updateInterval = 10;  // ms - control loop interval
+
+// -- Control Loop  
+const float actuatorSpeed = 84.0; // mm/s - max actuator speed at 100% duty cycle
+const int updateInterval = 10;  // ms - control loop interval (100 Hz)
+
+// -- Motion Cueing Factors (heave disabled)
+const float pitchCueFactor = 0.1; // degrees of extra pitch per °/s
+const float rollCueFactor = 0.1;  // degrees of extra roll per °/s
+
+// -- Smoothing Parameters
+const float IMU_SMOOTHING_FACTOR = 0.3; // Low-pass filter strength (user adjusted)
+const float TARGET_RATE_LIMIT = 2.0; // mm/s max rate of target change
+const float DEADBAND_THRESHOLD = 0.5; // mm - ignore changes smaller than this
+const float REDUCED_GAIN = 4.0; // Reduced gain for smoother response
+
+// -- Advanced Motion Control Parameters
+const bool ENABLE_DATA_RATE_LIMITING = true;    // Limit IMU data processing rate
+const unsigned long IMU_DATA_INTERVAL_MS = 50;  // Process IMU data max every 50ms (20Hz)
+const bool ENABLE_SEQUENTIAL_TARGETING = true;  // Wait for actuators to reach target before new targets
+const float TARGET_REACHED_TOLERANCE = 2.0;     // mm - tolerance for "target reached"
+const bool ENABLE_REAL_TIME_TRACKING = true;    // Improved position tracking with load compensation
+
+// -- Lookup Table Configuration
+const char* LOOKUP_TABLE_FILE = "/lookup_table.txt";
+const int MAX_LOOKUP_ENTRIES = 2000;  // Reduced to prevent memory issues
+
+// -- Workspace Constraints (matching Python validation)
+const float PITCH_MIN = -10.0;   // degrees
+const float PITCH_MAX = 15.0;    // degrees
+const float ROLL_MIN = -15.0;    // degrees
+const float ROLL_MAX = 15.0;     // degrees
+
+// -- BLE Configuration
+static NimBLEUUID SERVICE_UUID("0000ffe5-0000-1000-8000-00805f9a34fb");
+static NimBLEUUID CHAR_UUID("0000ffe4-0000-1000-8000-00805f9a34fb");
 
 // =============================================================================
-// COMMUNICATION MODE CONFIGURATION
+// LOOKUP TABLE STRUCTURES
 // =============================================================================
-// Set to true for Bluetooth, false for UART/Serial communication
-const bool USE_BLUETOOTH_MODE = true;
-
-// BLE Configuration - REPLACE WITH YOUR IMU'S ACTUAL UUIDs
-// NOTE: These are placeholder UUIDs - you MUST replace them with your device's actual UUIDs
-static BLEUUID SERVICE_UUID("0000ffe5-0000-1000-8000-00805f9a34fb");    // Update for your device
-static BLEUUID CHAR_UUID("0000ffe9-0000-1000-8000-00805f9a34fb");       // Update for your device
-
-// BLE Variables
-BLEClient* pClient = nullptr;
-BLERemoteCharacteristic* pRemoteCharacteristic = nullptr;
-bool bleConnected = false;
-bool bleConnecting = false;
+struct LookupEntry {
+  float roll_deg;
+  float pitch_deg;
+  float l1;
+  float l2;
+  float l3;
+  float height;
+};
 
 // =============================================================================
-// ACTUATOR POSITION TRACKING
-// =============================================================================
-float currentLength[3] = {minLength, minLength, minLength};  // Current lengths [A, B, C]
-float targetLength[3] = {homeLength, homeLength, homeLength};   // Target lengths [A, B, C]
-float actuatorAngles[3] = {0, 120, 240};   // Actuator positions in degrees
-bool systemHomed = false;  // Track if system has completed homing
-
-// =============================================================================
-// IMU DATA PARSING
+// IMU DATA STRUCTURES
 // =============================================================================
 struct IMUData {
-  float roll = 0.0;   // X-axis angle (degrees)
-  float pitch = 0.0;  // Y-axis angle (degrees) 
-  float yaw = 0.0;    // Z-axis angle (degrees)
+  float roll = 0.0;
+  float pitch = 0.0; 
+  float yaw = 0.0;
+  float ax = 0.0, ay = 0.0, az = 0.0;       // Acceleration (g)
+  float wx = 0.0, wy = 0.0, wz = 0.0;       // Angular velocity (°/s)
   bool dataValid = false;
   
   // Optional time data (when available)
@@ -65,137 +95,279 @@ struct IMUData {
   } timestamp;
 };
 
-IMUData imuData;
+// =============================================================================
+// GLOBAL VARIABLES
+// =============================================================================
+// -- BLE Variables
+NimBLEClient* pClient = nullptr;
+NimBLERemoteCharacteristic* pRemoteCharacteristic = nullptr;
+bool bleConnected = false;
+bool bleConnecting = false;
+const NimBLEAdvertisedDevice* targetDevice = nullptr;
+bool deviceFound = false;
+unsigned long connectionStartTime = 0;
+
+// -- Actuator Position Tracking
+float currentLength[3] = {minLength, minLength, minLength}; // Current lengths [A, B, C]
+float targetLength[3] = {neutralLength[0], neutralLength[1], neutralLength[2]}; // Target lengths [A, B, C]
+const float actuatorAngles[3] = {0, 120, 240}; // Actuator positions in degrees
+bool systemHomed = false;
+
+// -- Timing
 unsigned long lastUpdate = 0;
+
+// -- Lookup Table Data
+LookupEntry* lookupTable = nullptr;
+int lookupTableSize = 0;
+float* uniquePitches = nullptr;
+float* uniqueRolls = nullptr;
+int numPitches = 0;
+int numRolls = 0;
+bool lookupTableLoaded = false;
+
+// -- Smoothing Variables
+float filteredPitch = 0.0;
+float filteredRoll = 0.0;
+float filteredAngVelX = 0.0;
+float filteredAngVelY = 0.0;
+float previousTargets[3] = {neutralLength[0], neutralLength[1], neutralLength[2]};
+unsigned long lastIMUTime = 0;
+bool smoothingInitialized = false;
+
+// -- Advanced Motion Control Variables
+unsigned long lastIMUProcessTime = 0;     // For data rate limiting
+bool targetsReached[3] = {true, true, true}; // Track if each actuator reached target
+float estimatedLength[3] = {neutralLength[0], neutralLength[1], neutralLength[2]}; // Real-time position estimate
+float loadCompensation[3] = {0.0, 0.0, 0.0}; // Load-based position correction
+
+// -- IMU Data
+IMUData imuData;
+unsigned long lastPacketTime = 0;
+int packetCount = 0;
 
 // =============================================================================
 // FUNCTION DECLARATIONS
 // =============================================================================
+// System initialization
 void initializeSystem();
 void performHomingSequence();
+
+// BLE functions
 bool initializeBLE();
 void scanForIMU();
 bool connectToIMU();
-bool parseIMUPacket(uint8_t* data, size_t length);
-bool parseIMUPacketUART();  // For UART mode
-float computeActuatorLength(float pitchDeg, float rollDeg, float angleDeg);
+void onNotify(NimBLERemoteCharacteristic* pRemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
+
+// IMU data processing
+bool parseFullIMUPacket(uint8_t* data, size_t length);
+void processIMUData();
+
+// Lookup table functions
+bool loadLookupTable();
+bool validateWorkspaceConstraints(float pitch_deg, float roll_deg);
+bool getActuatorLengthsFromLookup(float pitch_deg, float roll_deg, float& l1, float& l2, float& l3);
+bool validateActuatorLengths(float l1, float l2, float l3);
+float bilinearInterpolate(float x, float y, float x1, float y1, float x2, float y2, 
+                         float f11, float f12, float f21, float f22);
+void cleanupLookupTable();
+
+// Smoothing functions
+void applyIMUSmoothing(float& pitch, float& roll, float& ang_vel_x, float& ang_vel_y);
+void applyTargetRateLimiting(float newTargets[3], float previousTargets[3], float maxRate_mm_per_s, float deltaTime_s);
+
+// Advanced motion control functions
+bool shouldProcessIMUData();          // Data rate limiting
+bool allTargetsReached();             // Sequential targeting check
+void updateRealTimeTracking();        // Improved position tracking
+void updateTargetReachedStatus();     // Update target reached flags
+
+// Stewart platform kinematics
+float computeActuatorLength(float pitchDeg, float rollDeg, float angleDeg); // Mathematical fallback
+
+// Motor control
 void updateActuatorsSmoothly();
 float stepTowards(float current, float target, float maxStep);
-void setMotorSpeed(int motor, int speed);
-void stopAllMotors();
-void onNotify(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
-void processIMUData();  // Common IMU processing
 
 // =============================================================================
 // BLE CALLBACK CLASSES
 // =============================================================================
-class MyClientCallback : public BLEClientCallbacks {
-  void onConnect(BLEClient* pclient) override {
-    debugPrint("BLE connection established with IMU device");
+class MyClientCallback : public NimBLEClientCallbacks {
+  void onConnect(NimBLEClient* pclient) override {
+    debugPrint("NIMBLE CLIENT CALLBACK: Connected to IMU device");
     bleConnected = true;
     bleConnecting = false;
-    
-    // Set up the service and characteristic
-    connectToIMU();
   }
 
-  void onDisconnect(BLEClient* pclient) override {
-    debugPrint("BLE connection lost - will attempt to reconnect");
+  void onDisconnect(NimBLEClient* pclient, int reason) override {
+    debugPrintf("NIMBLE CLIENT CALLBACK: Disconnected from IMU device (reason: %d)", reason);
     bleConnected = false;
     bleConnecting = false;
+    pRemoteCharacteristic = nullptr;  // Reset characteristic pointer
   }
 };
 
-class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
-  void onResult(BLEAdvertisedDevice advertisedDevice) override {
-    debugPrintf("Found device: %s", advertisedDevice.toString().c_str());
+class MyScanCallbacks: public NimBLEScanCallbacks {
+  void onResult(const NimBLEAdvertisedDevice* advertisedDevice) override {
+    debugPrintf("Found device: %s", advertisedDevice->toString().c_str());
+    debugPrintf("  - Name: %s", advertisedDevice->getName().c_str());
+    debugPrintf("  - Address: %s", advertisedDevice->getAddress().toString().c_str());
+    debugPrintf("  - RSSI: %d", advertisedDevice->getRSSI());
+    
+    // Show all service UUIDs this device advertises
+    if (advertisedDevice->haveServiceUUID()) {
+      debugPrint("  - Advertised Service UUIDs:");
+      for (int i = 0; i < advertisedDevice->getServiceUUIDCount(); i++) {
+        debugPrintf("    * %s", advertisedDevice->getServiceUUID(i).toString().c_str());
+      }
+    } else {
+      debugPrint("  - No service UUIDs advertised");
+    }
     
     // Check if this device has our service UUID
-    if (advertisedDevice.haveServiceUUID() && advertisedDevice.isAdvertisingService(SERVICE_UUID)) {
-      debugPrint("Found IMU device! Attempting to connect...");
-      BLEDevice::getScan()->stop();
-      
-      pClient = BLEDevice::createClient();
-      pClient->setClientCallbacks(new MyClientCallback());
-      
-      if (pClient->connect(&advertisedDevice)) {
-        debugPrint("BLE connection established");
+    if (advertisedDevice->haveServiceUUID() && advertisedDevice->isAdvertisingService(SERVICE_UUID)) {
+      debugPrint("Found target IMU device! Stopping scan...");
+      deviceFound = true;
+      targetDevice = advertisedDevice;
+      NimBLEDevice::getScan()->stop();
       } else {
-        debugPrint("BLE connection failed");
-        bleConnecting = false;
+      debugPrint("  - Does not match our target service UUID");
       }
+    debugPrint("  ---");
     }
+
+  void onScanEnd(const NimBLEScanResults& results, int reason) override {
+    debugPrintf("Scan ended. Found %d devices, reason: %d", results.getCount(), reason);
   }
 };
 
 // =============================================================================
-// SETUP FUNCTION
+// SETUP
 // =============================================================================
 void setup() {
-  // Initialize debug interface first
-  setupDebugUART2();
+  setupDebugUART0();  // Use UART0 for debugging as requested
   delay(1000);
   
-  if (USE_BLUETOOTH_MODE) {
-    debugPrint("==== Stewart Platform IMU Control (Bluetooth 5.0) Starting ====");
+  debugPrint("\n==== Stewart Platform Real-time IMU Control (Final Version) ====");
     
+  // Initialize system components
     initializeSystem();
     
-    // Initialize BLE
-    debugPrint("Initializing Bluetooth Low Energy...");
+  // Initialize SPIFFS for lookup table
+  if (!SPIFFS.begin(true)) {
+    debugPrint("[!] SPIFFS mount failed");
+    // Continue without lookup table - will use fallback
+  } else {
+    debugPrint("[✓] SPIFFS mounted");
+    
+    // Load lookup table
+    if (loadLookupTable()) {
+      debugPrint("[✓] Lookup table loaded successfully");
+    } else {
+      debugPrint("[!] Failed to load lookup table - using mathematical fallback");
+    }
+  }
+  
+  // Initialize NimBLE
+  debugPrint("Initializing NimBLE...");
     if (initializeBLE()) {
-      debugPrint("BLE initialized successfully");
+    debugPrint("[✓] NimBLE initialized successfully");
       scanForIMU();
     } else {
-      debugPrint("Failed to initialize BLE");
+    debugPrint("[!] NimBLE initialization failed!");
       return;
     }
-  } else {
-    debugPrint("==== Stewart Platform IMU Control (UART) Starting ====");
-    
-    // Initialize Serial for UART communication with IMU
-    Serial.begin(115200);
-    debugPrint("UART initialized for IMU communication at 115200 baud");
-    
-    initializeSystem();
-  }
   
+  // Perform homing sequence
   performHomingSequence();
   
-  debugPrint("System initialized and homed");
-  if (USE_BLUETOOTH_MODE) {
-    debugPrint("Waiting for IMU data packets via BLE...");
-  } else {
-    debugPrint("Waiting for IMU data packets via UART (0x55 0x61)...");
-  }
+  debugPrint("[✓] System initialized and ready for IMU control");
+  debugPrint("Waiting for IMU data packets via NimBLE...");
+  debugPrint("---------------------------------------------------------------");
 }
 
 // =============================================================================
 // MAIN LOOP
 // =============================================================================
 void loop() {
-  if (USE_BLUETOOTH_MODE) {
-    // Handle BLE connection state
-    if (!bleConnected && !bleConnecting && systemHomed) {
-      debugPrint("Attempting to reconnect to IMU...");
-      scanForIMU();
-      delay(2000); // Wait before retry
+  // Debug: Show current BLE state
+  static unsigned long lastStatusTime = 0;
+  if (millis() - lastStatusTime > 5000) {
+    debugPrintf("Status - BLE: %s | Homed: %s | Lookup: %s | Packets: %d", 
+                bleConnected ? "CONN" : "DISC", 
+                systemHomed ? "YES" : "NO",
+                lookupTableLoaded ? "LOADED" : "MATH",
+                packetCount);
+    
+    // Show advanced motion control status
+    if (systemHomed) {
+      debugPrintf("Motion - DataLimit: %s | Sequential: %s | AllReached: %s", 
+                  ENABLE_DATA_RATE_LIMITING ? "ON" : "OFF",
+                  ENABLE_SEQUENTIAL_TARGETING ? "ON" : "OFF", 
+                  allTargetsReached() ? "YES" : "NO");
     }
-  } else {
-    // UART mode - check for incoming data
-    if (systemHomed && parseIMUPacketUART()) {
-      processIMUData();
+    
+    lastStatusTime = millis();
+  }
+  
+  // Handle connection timeout
+  if (bleConnecting && !bleConnected && millis() - connectionStartTime > 8000) {
+    debugPrint("Connection timeout (8 seconds) - resetting connection state");
+    bleConnecting = false;
+    if (pClient != nullptr) {
+      pClient->disconnect();
+      NimBLEDevice::deleteClient(pClient);
+      pClient = nullptr;
     }
   }
   
-  // Only process control updates after homing is complete
+  // Handle BLE connection state with retry delay
+  static unsigned long lastScanTime = 0;
+    if (!bleConnected && !bleConnecting && systemHomed) {
+    if (millis() - lastScanTime > 10000) { // Wait 10 seconds between scan attempts
+      debugPrint("Attempting to connect to IMU...");
+      scanForIMU();
+      lastScanTime = millis();
+    }
+  }
+  
+  // Try to establish service connection after BLE connection
+  if (bleConnected && pRemoteCharacteristic == nullptr) {
+    debugPrint(">>> BLE connected, establishing service connection...");
+    if (connectToIMU()) {
+      debugPrint(">>> Service connection established successfully");
+  } else {
+      debugPrint(">>> Failed to establish service connection");
+      // If service connection fails, disconnect and retry
+      bleConnected = false;
+      if (pClient != nullptr) {
+        pClient->disconnect();
+      }
+    }
+  }
+  
+  // Update actuators at regular intervals (only after homing is complete)
   if (systemHomed) {
-    // Update actuators at regular intervals
     unsigned long now = millis();
     if (now - lastUpdate >= updateInterval) {
+      // Update real-time position tracking
+      if (ENABLE_REAL_TIME_TRACKING) {
+        updateRealTimeTracking();
+      }
+      
+      // Update target reached status
+      updateTargetReachedStatus();
+      
+      // Update actuator control
       updateActuatorsSmoothly();
       lastUpdate = now;
     }
+  }
+  
+  // Show status if no packets received for a while
+  if (systemHomed && bleConnected && pRemoteCharacteristic != nullptr && 
+      millis() - lastPacketTime > 5000 && packetCount == 0) {
+    debugPrint("No IMU packets received yet. Check IMU configuration and UUIDs.");
+    lastPacketTime = millis(); // Prevent spam
   }
   
   delay(10);
@@ -205,155 +377,286 @@ void loop() {
 // SYSTEM INITIALIZATION
 // =============================================================================
 void initializeSystem() {
-  // Initialize motor driver pins
+  // Initialize motor drivers and PWM from pin_definitions.cpp
   initializePins();
   setupPWM();
-  
-  // Stop all motors initially
   stopAllMotors();
-  
-  debugPrint("Motor drivers initialized");
-}
-
-// =============================================================================
-// BLE INITIALIZATION
-// =============================================================================
-bool initializeBLE() {
-  BLEDevice::init("Stewart_Platform_Control");
-  return true;
-}
-
-void scanForIMU() {
-  if (bleConnecting) return;
-  
-  bleConnecting = true;
-  debugPrint("Scanning for IMU device...");
-  debugPrintf("Looking for service UUID: %s", SERVICE_UUID.toString().c_str());
-  
-  BLEScan* pBLEScan = BLEDevice::getScan();
-  pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
-  pBLEScan->setInterval(1349);
-  pBLEScan->setWindow(449);
-  pBLEScan->setActiveScan(true);
-  pBLEScan->start(10, false); // Scan for 10 seconds
-}
-
-bool connectToIMU() {
-  if (!bleConnected || pClient == nullptr) return false;
-  
-  debugPrint("Getting IMU service...");
-  BLERemoteService* pRemoteService = pClient->getService(SERVICE_UUID);
-  if (pRemoteService == nullptr) {
-    debugPrint("Failed to find IMU service");
-    return false;
-  }
-  
-  debugPrint("Getting IMU characteristic...");
-  pRemoteCharacteristic = pRemoteService->getCharacteristic(CHAR_UUID);
-  if (pRemoteCharacteristic == nullptr) {
-    debugPrint("Failed to find IMU characteristic");
-    return false;
-  }
-  
-  // Register for notifications
-  if (pRemoteCharacteristic->canNotify()) {
-    pRemoteCharacteristic->registerForNotify(onNotify);
-    debugPrint("BLE notifications registered successfully");
-    return true;
-  }
-  
-  debugPrint("Characteristic does not support notifications");
-  return false;
-}
-
-// BLE notification callback
-void onNotify(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
-  debugPrintf("BLE notification received: %d bytes", length);
-  
-  if (parseIMUPacket(pData, length)) {
-    processIMUData();
-  } else {
-    debugPrint("Failed to parse IMU packet");
-    // Print raw data for debugging
-    debugPrint("Raw packet data:");
-    for(int i = 0; i < length && i < 32; i++) {
-      Serial2.printf("0x%02X ", pData[i]);
-      if((i + 1) % 8 == 0) Serial2.println();
-    }
-    Serial2.println();
-  }
+  debugPrint("[✓] Motor drivers initialized");
 }
 
 // =============================================================================
 // HOMING SEQUENCE
 // =============================================================================
 void performHomingSequence() {
-  debugPrint("Starting homing sequence...");
-  debugPrintf("Moving actuators from %d mm to %d mm (neutral position)", 
-                minLength, homeLength);
+  debugPrint("[*] Starting homing sequence...");
+  debugPrint("[*] Moving actuators down to shortest position (4 seconds at full speed)...");
   
-  // Calculate expected homing time
-  float homingDistance = homeLength - minLength;
-  float homingTime = homingDistance / actuatorSpeed;
+  // Move all actuators down at full speed for reliable initialization
+  const int moveDownSpeed = -255; // Negative for downward movement (100% of max speed)
   
-  debugPrintf("Expected homing time: %.1f seconds", homingTime);
-  
-  // Move actuators to home position smoothly
-  unsigned long homingStart = millis();
-  
-  while (!systemHomed) {
-    unsigned long now = millis();
-    if (now - lastUpdate >= updateInterval) {
-      updateActuatorsSmoothly();
-      
-      // Check if all actuators reached home position
-      bool allAtHome = true;
-      for (int i = 0; i < 3; i++) {
-        if (abs(currentLength[i] - homeLength) > 1.0) { // 1mm tolerance
-          allAtHome = false;
-          break;
-        }
-      }
-      
-      if (allAtHome) {
-        systemHomed = true;
-        stopAllMotors();
-        debugPrint("Homing complete - platform level");
-        debugPrintf("Final positions: A=%.1f, B=%.1f, C=%.1f mm",
-                      currentLength[0], currentLength[1], currentLength[2]);
-      }
-      
-      // Safety timeout
-      if ((now - homingStart) > (homingTime * 1000 * 2)) {
-        debugPrint("Homing timeout - proceeding anyway");
-        systemHomed = true;
-        stopAllMotors();
-        break;
-      }
-      
-      lastUpdate = now;
+  // Move down for 4 seconds at full speed
+  unsigned long moveStartTime = millis();
+  while (millis() - moveStartTime < 4000) { // 4 seconds = 4000ms
+    for (int i = 1; i <= 3; i++) {
+      setMotorSpeed(i, moveDownSpeed); // -255 PWM = 100% speed downward
     }
+    delay(updateInterval);
+  }
+  
+  // Stop all motors
+  stopAllMotors();
+  debugPrint("[✓] All actuators at shortest position");
+  
+  // Set targets to neutral lengths and move there
+  for (int i = 0; i < 3; i++) {
+    targetLength[i] = neutralLength[i];
+    currentLength[i] = minLength; // Set current position to minimum since we're at bottom
+  }
+  
+  debugPrint("[*] Moving to neutral positions...");
+  
+  // Move actuators to neutral positions and wait until they actually reach it
+  const float positionTolerance = 5.0; // mm - how close to neutral position is "close enough"
+  const unsigned long maxNeutralTime = 8000; // Max 8 seconds to reach neutral (safety)
+  unsigned long neutralStartTime = millis();
+  bool allAtNeutral = false;
+  
+  while (!allAtNeutral && (millis() - neutralStartTime < maxNeutralTime)) {
+    updateActuatorsSmoothly();
+    
+    // Check if all actuators are close enough to neutral positions
+    bool actuator1AtNeutral = abs(currentLength[0] - neutralLength[0]) <= positionTolerance;
+    bool actuator2AtNeutral = abs(currentLength[1] - neutralLength[1]) <= positionTolerance;
+    bool actuator3AtNeutral = abs(currentLength[2] - neutralLength[2]) <= positionTolerance;
+    
+    if (actuator1AtNeutral && actuator2AtNeutral && actuator3AtNeutral) {
+      allAtNeutral = true;
+      debugPrintf("All actuators reached neutral positions - Lengths: %.1f, %.1f, %.1f mm", 
+                  currentLength[0], currentLength[1], currentLength[2]);
+    }
+    
+    delay(updateInterval);
+  }
+  
+  if (!allAtNeutral) {
+    debugPrint("[!] Warning: Not all actuators reached neutral position within timeout");
+    debugPrintf("Current positions - Motor 1: %.1f mm, Motor 2: %.1f mm, Motor 3: %.1f mm", 
+                currentLength[0], currentLength[1], currentLength[2]);
+  } else {
+    debugPrint("[✓] Stewart Platform at NEUTRAL STATE and ready for control");
+  }
+  
+  // Hold at neutral position for 1 second to ensure stability
+  debugPrint("[*] Stabilizing at neutral position...");
+  unsigned long stabilizeStartTime = millis();
+  while (millis() - stabilizeStartTime < 1000) { // 1 second
+    updateActuatorsSmoothly(); // Continue fine-tuning position
+    delay(updateInterval);
+  }
+  
+  // Stop all motors
+  stopAllMotors();
+  systemHomed = true;
+  
+  debugPrint("[✓] Homing complete - platform stable at neutral state");
+}
+
+// =============================================================================
+// BLE INITIALIZATION AND CONNECTION
+// =============================================================================
+bool initializeBLE() {
+  NimBLEDevice::init("Stewart_Platform_Control");
+  // Optional: Set transmit power
+  NimBLEDevice::setPower(3); // 3dBm
+  return true;
+}
+
+void scanForIMU() {
+  if (bleConnecting) return;
+  
+  // Reset flags
+  deviceFound = false;
+  targetDevice = nullptr;
+  
+  bleConnecting = true;
+  debugPrint("Scanning for IMU device...");
+  debugPrintf("Looking for service UUID: %s", SERVICE_UUID.toString().c_str());
+  debugPrint("Scan will run for 10 seconds...");
+  
+  NimBLEScan* pScan = NimBLEDevice::getScan();
+  pScan->setScanCallbacks(new MyScanCallbacks(), false);
+  pScan->setInterval(1349);
+  pScan->setWindow(449);
+  pScan->setActiveScan(true);
+  
+  // Start scan 
+  pScan->start(10, false); // Scan for 10 seconds - async, results handled in callbacks
+  
+  // Scan completed (results handled in onScanEnd callback)
+  debugPrint("Scan completed.");
+  
+  // Check if we found our target device
+  if (deviceFound && targetDevice != nullptr) {
+    debugPrint("Target device found, attempting connection...");
+    
+    // Clean up any existing client
+    if (pClient != nullptr) {
+      pClient->disconnect();
+      NimBLEDevice::deleteClient(pClient);
+    }
+    
+    pClient = NimBLEDevice::createClient();
+    pClient->setClientCallbacks(new MyClientCallback());
+    
+    // Set connection parameters for better stability
+    pClient->setConnectionParams(12, 12, 0, 150);
+    pClient->setConnectTimeout(5000); // 5 second timeout
+    
+    connectionStartTime = millis();
+    debugPrint("Calling pClient->connect()...");
+    
+    bool connectResult = pClient->connect(targetDevice);
+    debugPrintf("pClient->connect() returned: %s", connectResult ? "SUCCESS" : "FAILED");
+    
+    if (connectResult) {
+      debugPrint("BLE connection established successfully");
+      bleConnected = true;
+      bleConnecting = false;
+    } else {
+      debugPrint("Failed to establish BLE connection");
+      bleConnecting = false;
+      // Clean up failed client
+      NimBLEDevice::deleteClient(pClient);
+      pClient = nullptr;
+    }
+  } else {
+    bleConnecting = false;
+    debugPrint("No matching IMU device found during scan");
+  }
+}
+
+bool connectToIMU() {
+  debugPrint("*** connectToIMU() called");
+  if (!bleConnected || pClient == nullptr) {
+    debugPrintf("*** Early return: bleConnected=%s, pClient=%s", 
+                bleConnected ? "true" : "false", 
+                pClient ? "valid" : "null");
+    return false;
+  }
+  
+  debugPrint("*** Getting IMU service...");
+  NimBLERemoteService* pRemoteService = pClient->getService(SERVICE_UUID);
+  debugPrint("*** getService() call completed");
+  
+  if (pRemoteService == nullptr) {
+    debugPrint("*** Failed to find IMU service");
+    return false;
+  }
+  
+  debugPrint("*** Getting IMU characteristic...");
+  pRemoteCharacteristic = pRemoteService->getCharacteristic(CHAR_UUID);
+  debugPrint("*** getCharacteristic() call completed");
+  if (pRemoteCharacteristic == nullptr) {
+    debugPrint("Failed to find IMU characteristic");
+    
+    // Try to get all characteristics and show what's available
+    debugPrint("Available characteristics:");
+    auto pChars = pRemoteService->getCharacteristics(true);
+    for (auto& pChar : pChars) {
+      debugPrintf("  - %s", pChar->getUUID().toString().c_str());
+    }
+    return false;
+  }
+  
+  debugPrint("Found IMU characteristic, setting up notifications...");
+  
+  // Use NimBLE's subscribe method instead of registerForNotify
+  if (pRemoteCharacteristic->canNotify()) {
+    if (pRemoteCharacteristic->subscribe(true, onNotify)) {
+      debugPrint("NimBLE notifications subscribed successfully");
+    return true;
+    } else {
+      debugPrint("Failed to subscribe to notifications");
+      return false;
+    }
+  } else if (pRemoteCharacteristic->canIndicate()) {
+    if (pRemoteCharacteristic->subscribe(false, onNotify)) {
+      debugPrint("NimBLE indications subscribed successfully");
+      return true;
+    } else {
+      debugPrint("Failed to subscribe to indications");
+  return false;
+}
+  } else {
+    debugPrint("Characteristic does not support notifications or indications");
+    return false;
   }
 }
 
 // =============================================================================
-// IMU DATA PARSING - BLE MODE
+// IMU DATA PROCESSING  
 // =============================================================================
-bool parseIMUPacket(uint8_t* data, size_t length) {
+// NimBLE notification callback
+void onNotify(NimBLERemoteCharacteristic* pRemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
+  debugPrintf("🔔 NOTIFICATION RECEIVED! %d bytes", length);
+  
+  if (parseFullIMUPacket(pData, length)) {
+    packetCount++;
+    lastPacketTime = millis();
+    debugPrintf("Successfully parsed IMU packet #%d", packetCount);
+    
+    // Process the IMU data for platform control
+    if (systemHomed) {
+      processIMUData();
+    }
+    
+  } else {
+    debugPrint("Failed to parse IMU packet");
+    // Print raw data for debugging
+    debugPrint("Raw packet data:");
+    for(int i = 0; i < length && i < 32; i++) {
+      Serial.printf("0x%02X ", pData[i]);
+      if((i + 1) % 8 == 0) Serial.println();
+    }
+    Serial.println();
+  }
+}
+
+// Parse IMU packet from BLE data
+bool parseFullIMUPacket(uint8_t* data, size_t length) {
   // Check for minimum packet size (header + flag + 18 data bytes)
   if (length < 20) return false;
   
   // Look for packet header (0x55 0x61)
   if (data[0] == 0x55 && data[1] == 0x61) {
-    // Extract angle data (bytes 14-19)
-    int16_t rollRaw = (data[15] << 8) | data[14];   // Roll high/low
-    int16_t pitchRaw = (data[17] << 8) | data[16];  // Pitch high/low  
-    int16_t yawRaw = (data[19] << 8) | data[18];    // Yaw high/low
+    // Extract acceleration data (bytes 2-7) - not used but available for future
+    int16_t axRaw = (data[3] << 8) | data[2];
+    int16_t ayRaw = (data[5] << 8) | data[4];  
+    int16_t azRaw = (data[7] << 8) | data[6];
     
-    // Convert to degrees according to protocol
-    imuData.roll = (float)rollRaw / 32768.0 * 180.0;
+    // Extract angular velocity data (bytes 8-13)
+    int16_t wxRaw = (data[9] << 8) | data[8];
+    int16_t wyRaw = (data[11] << 8) | data[10];
+    int16_t wzRaw = (data[13] << 8) | data[12];
+    
+    // Extract angle data (bytes 14-19)
+    int16_t rollRaw = (data[15] << 8) | data[14];
+    int16_t pitchRaw = (data[17] << 8) | data[16]; 
+    int16_t yawRaw = (data[19] << 8) | data[18];
+    
+    // Convert to physical units according to protocol
+    imuData.ax = (float)axRaw / 32768.0 * 16.0;      // ±16g (not used - heave disabled)
+    imuData.ay = (float)ayRaw / 32768.0 * 16.0;
+    imuData.az = (float)azRaw / 32768.0 * 16.0;
+    
+    imuData.wx = (float)wxRaw / 32768.0 * 2000.0;    // ±2000°/s
+    imuData.wy = (float)wyRaw / 32768.0 * 2000.0;
+    imuData.wz = (float)wzRaw / 32768.0 * 2000.0;
+    
+    imuData.roll = (float)rollRaw / 32768.0 * 180.0;  // ±180°
     imuData.pitch = (float)pitchRaw / 32768.0 * 180.0;
     imuData.yaw = (float)yawRaw / 32768.0 * 180.0;
+    
     imuData.dataValid = true;
     
     // Parse optional time data if available (28-byte packet)
@@ -367,7 +670,7 @@ bool parseIMUPacket(uint8_t* data, size_t length) {
       imuData.timestamp.millisecond = (data[27] << 8) | data[26]; // MSH MSL
       imuData.timestamp.timeValid = true;
       
-      debugPrintf("Time: %02d/%02d/%02d %02d:%02d:%02d.%03d", 
+      debugPrintf("BLE Time: %02d/%02d/%02d %02d:%02d:%02d.%03d", 
                   imuData.timestamp.year, imuData.timestamp.month, imuData.timestamp.day,
                   imuData.timestamp.hour, imuData.timestamp.minute, imuData.timestamp.second,
                   imuData.timestamp.millisecond);
@@ -381,207 +684,665 @@ bool parseIMUPacket(uint8_t* data, size_t length) {
   return false;
 }
 
-// =============================================================================
-// IMU DATA PARSING - UART MODE
-// =============================================================================
-bool parseIMUPacketUART() {
-  static uint8_t buffer[32];
-  static int bufferIndex = 0;
+void processIMUData() {
+  if (!imuData.dataValid) return;
   
-  // Read available bytes from Serial (UART0)
-  while (Serial.available()) {
-    uint8_t byte = Serial.read();
+  // 1. Data Rate Limiting - only process at maximum specified rate
+  if (ENABLE_DATA_RATE_LIMITING && !shouldProcessIMUData()) {
+    return; // Skip this data point
+  }
+  lastIMUProcessTime = millis();
+  
+  // 2. Sequential Targeting - only accept new targets when current ones are reached
+  if (ENABLE_SEQUENTIAL_TARGETING && !allTargetsReached()) {
+    return; // Wait for current targets to be reached
+  }
+  
+  // Extract raw IMU values
+  float pitch = imuData.pitch;
+  float roll = imuData.roll;
+  float ang_vel_x = imuData.wx;
+  float ang_vel_y = imuData.wy;
+  
+  // Apply IMU smoothing
+  applyIMUSmoothing(pitch, roll, ang_vel_x, ang_vel_y);
+  
+  // Motion cueing from angular velocity (no heave)
+  float pitch_with_cue = pitch + (ang_vel_y * pitchCueFactor);
+  float roll_with_cue = roll + (ang_vel_x * rollCueFactor);
+  
+  // Store current time for rate limiting
+  unsigned long currentTime = millis();
+  float deltaTime_s = (currentTime - lastIMUTime) / 1000.0;
+  lastIMUTime = currentTime;
+  
+  // Calculate new target lengths using lookup table
+  float newTargets[3];
+  float lookup_l1, lookup_l2, lookup_l3;
+  bool lookupSuccess = false;
+  
+  if (lookupTableLoaded) {
+    // Use lookup table with automatic clamping for continuous movement
+    lookupSuccess = getActuatorLengthsFromLookup(pitch_with_cue, roll_with_cue, 
+                                                lookup_l1, lookup_l2, lookup_l3);
+  }
+  
+  if (lookupSuccess) {
+    // Use lookup table results directly (no heave offset)
+    newTargets[0] = lookup_l1;  // Motor 1 (l1)
+    newTargets[1] = lookup_l2;  // Motor 2 (l2)
+    newTargets[2] = lookup_l3;  // Motor 3 (l3)
     
-    // Look for packet header
-    if (bufferIndex == 0 && byte == 0x55) {
-      buffer[0] = byte;
-      bufferIndex = 1;
+    // Ensure within physical limits
+    for (int i = 0; i < 3; i++) {
+      newTargets[i] = constrain(newTargets[i], minLength, maxLength);
     }
-    // Check for flag byte (acceleration + angle data)
-    else if (bufferIndex == 1 && byte == 0x61) {
-      buffer[1] = byte;
-      bufferIndex = 2;
-    }
-    // Collect data bytes - handle both 20-byte and 28-byte packets
-    else if (bufferIndex >= 2 && bufferIndex < 28) {
-      buffer[bufferIndex] = byte;
-      bufferIndex++;
-      
-      // Process complete basic packet (20 bytes: header + flag + 18 data bytes)
-      if (bufferIndex == 20) {
-        // Extract angle data (bytes 14-19)
-        int16_t rollRaw = (buffer[15] << 8) | buffer[14];   // Roll high/low
-        int16_t pitchRaw = (buffer[17] << 8) | buffer[16];  // Pitch high/low  
-        int16_t yawRaw = (buffer[19] << 8) | buffer[18];    // Yaw high/low
-        
-        // Convert to degrees according to protocol
-        imuData.roll = (float)rollRaw / 32768.0 * 180.0;
-        imuData.pitch = (float)pitchRaw / 32768.0 * 180.0;
-        imuData.yaw = (float)yawRaw / 32768.0 * 180.0;
-        imuData.dataValid = true;
-        imuData.timestamp.timeValid = false; // No time data yet
-        
-        // Don't reset bufferIndex yet - check if more data is coming for time
-      }
-      
-      // Process extended packet with time data (28 bytes total)
-      else if (bufferIndex == 28) {
-        // Parse time data (bytes 20-27)
-        imuData.timestamp.year = buffer[20];
-        imuData.timestamp.month = buffer[21];
-        imuData.timestamp.day = buffer[22];
-        imuData.timestamp.hour = buffer[23];
-        imuData.timestamp.minute = buffer[24];
-        imuData.timestamp.second = buffer[25];
-        imuData.timestamp.millisecond = (buffer[27] << 8) | buffer[26]; // MSH MSL
-        imuData.timestamp.timeValid = true;
-        
-        debugPrintf("UART Time: %02d/%02d/%02d %02d:%02d:%02d.%03d", 
-                    imuData.timestamp.year, imuData.timestamp.month, imuData.timestamp.day,
-                    imuData.timestamp.hour, imuData.timestamp.minute, imuData.timestamp.second,
-                    imuData.timestamp.millisecond);
-        
-        bufferIndex = 0; // Reset for next packet
-        return true;
-      }
-    }
-    else {
-      // Invalid sequence, reset
-      bufferIndex = 0;
+  } else {
+    // Only fallback to mathematical computation if lookup table failed to load
+    debugPrint("[!] Lookup table unavailable - using mathematical fallback");
+    for (int i = 0; i < 3; i++) {
+      newTargets[i] = computeActuatorLength(pitch_with_cue, roll_with_cue, actuatorAngles[i]);
     }
   }
   
-  // Handle timeout for incomplete packets - if we have basic data but no more bytes coming
-  static unsigned long lastByteTime = 0;
-  if (bufferIndex == 20 && (millis() - lastByteTime > 10)) {
-    // Timeout waiting for time data - process basic packet
-    bufferIndex = 0;
-    return true;
+  // Apply rate limiting for smoother movement
+  if (deltaTime_s > 0 && deltaTime_s < 1.0) { // Valid time delta
+    applyTargetRateLimiting(newTargets, previousTargets, TARGET_RATE_LIMIT, deltaTime_s);
   }
   
-  if (bufferIndex > 0) lastByteTime = millis();
+  // Update target lengths with smoothed values
+  for (int i = 0; i < 3; i++) {
+    targetLength[i] = newTargets[i];
+    previousTargets[i] = newTargets[i];
+  }
   
-  return false;
+  // Optional: Log received data to serial for debugging
+  static unsigned long lastLogTime = 0;
+  if (millis() - lastLogTime > 1000) { // Log once per second
+    debugPrintf("IMU: P:%.1f° R:%.1f° | Targets: %.1f,%.1f,%.1f mm", 
+                pitch, roll, targetLength[0], targetLength[1], targetLength[2]);
+    lastLogTime = millis();
+  }
 }
 
 // =============================================================================
-// COMMON IMU DATA PROCESSING
+// LOOKUP TABLE IMPLEMENTATION
 // =============================================================================
-void processIMUData() {
-  // Convert IMU angles to actuator lengths
-  targetLength[0] = computeActuatorLength(imuData.pitch, imuData.roll, actuatorAngles[0]);
-  targetLength[1] = computeActuatorLength(imuData.pitch, imuData.roll, actuatorAngles[1]);
-  targetLength[2] = computeActuatorLength(imuData.pitch, imuData.roll, actuatorAngles[2]);
+bool loadLookupTable() {
+  debugPrint("[*] Loading lookup table from SPIFFS...");
+  debugPrintf("[*] Free heap before loading: %d bytes", ESP.getFreeHeap());
   
-  debugPrintf("IMU Data - Roll: %.2f°, Pitch: %.2f°, Yaw: %.2f°", 
-              imuData.roll, imuData.pitch, imuData.yaw);
-  debugPrintf("Actuator Targets - A: %.1fmm, B: %.1fmm, C: %.1fmm", 
-              targetLength[0], targetLength[1], targetLength[2]);
+  File file = SPIFFS.open(LOOKUP_TABLE_FILE, "r");
+  if (!file) {
+    debugPrint("[!] Failed to open lookup table file");
+    return false;
+  }
+  
+  // Allocate memory for lookup table
+  lookupTable = (LookupEntry*)malloc(MAX_LOOKUP_ENTRIES * sizeof(LookupEntry));
+  if (!lookupTable) {
+    debugPrint("[!] Failed to allocate memory for lookup table");
+    file.close();
+    return false;
+  }
+  
+  // Read and parse CSV file
+  String line;
+  int lineCount = 0;
+  bool isHeader = true;
+  
+  while (file.available() && lookupTableSize < MAX_LOOKUP_ENTRIES) {
+    line = file.readStringUntil('\n');
+    line.trim();
+    
+    // Skip header line
+    if (isHeader) {
+      isHeader = false;
+      continue;
+    }
+    
+    // Skip empty lines
+    if (line.length() == 0) continue;
+    
+    // Yield periodically to prevent watchdog timeout
+    if (lineCount % 100 == 0) {
+      yield();
+    }
+    
+    // Parse CSV line: roll_deg,pitch_deg,l1,l2,l3,height
+    int commaIndices[5];
+    int commaCount = 0;
+    
+    // Find comma positions
+    for (int i = 0; i < line.length() && commaCount < 5; i++) {
+      if (line.charAt(i) == ',') {
+        commaIndices[commaCount++] = i;
+      }
+    }
+    
+    if (commaCount != 5) {
+      debugPrintf("[!] Invalid CSV line %d: wrong number of columns", lineCount);
+      continue;
+    }
+    
+    // Extract values
+    try {
+      lookupTable[lookupTableSize].roll_deg = line.substring(0, commaIndices[0]).toFloat();
+      lookupTable[lookupTableSize].pitch_deg = line.substring(commaIndices[0] + 1, commaIndices[1]).toFloat();
+      lookupTable[lookupTableSize].l1 = line.substring(commaIndices[1] + 1, commaIndices[2]).toFloat();
+      lookupTable[lookupTableSize].l2 = line.substring(commaIndices[2] + 1, commaIndices[3]).toFloat();
+      lookupTable[lookupTableSize].l3 = line.substring(commaIndices[3] + 1, commaIndices[4]).toFloat();
+      lookupTable[lookupTableSize].height = line.substring(commaIndices[4] + 1).toFloat();
+      
+      lookupTableSize++;
+    } catch (...) {
+      debugPrintf("[!] Failed to parse line %d", lineCount);
+    }
+    
+    lineCount++;
+  }
+  
+  file.close();
+  
+  if (lookupTableSize == 0) {
+    debugPrint("[!] No valid data found in lookup table");
+    free(lookupTable);
+    lookupTable = nullptr;
+    return false;
+  }
+  
+  debugPrintf("[✓] Loaded %d lookup table entries", lookupTableSize);
+  
+  // Extract unique pitch and roll values for interpolation
+  // Use dynamic allocation to avoid stack overflow
+  const int MAX_UNIQUE_VALUES = 200; // Reduced from 1000 to be more reasonable
+  float* pitches = (float*)malloc(MAX_UNIQUE_VALUES * sizeof(float));
+  float* rolls = (float*)malloc(MAX_UNIQUE_VALUES * sizeof(float));
+  
+  if (!pitches || !rolls) {
+    debugPrint("[!] Failed to allocate memory for unique value extraction");
+    if (pitches) free(pitches);
+    if (rolls) free(rolls);
+    free(lookupTable);
+    lookupTable = nullptr;
+    return false;
+  }
+  
+  int pitchCount = 0, rollCount = 0;
+  
+  // Find unique pitches
+  for (int i = 0; i < lookupTableSize; i++) {
+    float pitch = lookupTable[i].pitch_deg;
+    bool found = false;
+    for (int j = 0; j < pitchCount; j++) {
+      if (abs(pitches[j] - pitch) < 0.01) {
+        found = true;
+        break;
+      }
+    }
+    if (!found && pitchCount < MAX_UNIQUE_VALUES) {
+      pitches[pitchCount++] = pitch;
+    }
+  }
+  
+  // Find unique rolls
+  for (int i = 0; i < lookupTableSize; i++) {
+    float roll = lookupTable[i].roll_deg;
+    bool found = false;
+    for (int j = 0; j < rollCount; j++) {
+      if (abs(rolls[j] - roll) < 0.01) {
+        found = true;
+        break;
+      }
+    }
+    if (!found && rollCount < MAX_UNIQUE_VALUES) {
+      rolls[rollCount++] = roll;
+    }
+  }
+  
+  // Sort arrays (simple bubble sort)
+  for (int i = 0; i < pitchCount - 1; i++) {
+    for (int j = 0; j < pitchCount - i - 1; j++) {
+      if (pitches[j] > pitches[j + 1]) {
+        float temp = pitches[j];
+        pitches[j] = pitches[j + 1];
+        pitches[j + 1] = temp;
+      }
+    }
+  }
+  
+  for (int i = 0; i < rollCount - 1; i++) {
+    for (int j = 0; j < rollCount - i - 1; j++) {
+      if (rolls[j] > rolls[j + 1]) {
+        float temp = rolls[j];
+        rolls[j] = rolls[j + 1];
+        rolls[j + 1] = temp;
+      }
+    }
+  }
+  
+  // Allocate and copy unique values
+  uniquePitches = (float*)malloc(pitchCount * sizeof(float));
+  uniqueRolls = (float*)malloc(rollCount * sizeof(float));
+  
+  if (!uniquePitches || !uniqueRolls) {
+    debugPrint("[!] Failed to allocate memory for unique values");
+    // Clean up temporary arrays before returning
+    free(pitches);
+    free(rolls);
+    if (uniquePitches) free(uniquePitches);
+    if (uniqueRolls) free(uniqueRolls);
+    free(lookupTable);
+    lookupTable = nullptr;
+    return false;
+  }
+  
+  memcpy(uniquePitches, pitches, pitchCount * sizeof(float));
+  memcpy(uniqueRolls, rolls, rollCount * sizeof(float));
+  numPitches = pitchCount;
+  numRolls = rollCount;
+  
+  // Clean up temporary arrays
+  free(pitches);
+  free(rolls);
+  
+  debugPrintf("[✓] Pitch range: [%.1f°, %.1f°] with %d points", 
+              uniquePitches[0], uniquePitches[numPitches-1], numPitches);
+  debugPrintf("[✓] Roll range: [%.1f°, %.1f°] with %d points", 
+              uniqueRolls[0], uniqueRolls[numRolls-1], numRolls);
+  
+  debugPrintf("[*] Free heap after loading: %d bytes", ESP.getFreeHeap());
+  
+  lookupTableLoaded = true;
+        return true;
+      }
+
+bool validateWorkspaceConstraints(float pitch_deg, float roll_deg) {
+  // Check basic ranges
+  if (pitch_deg < PITCH_MIN || pitch_deg > PITCH_MAX) {
+    return false;
+    }
+  if (roll_deg < ROLL_MIN || roll_deg > ROLL_MAX) {
+    return false;
+    }
+  
+  // Check constraint pattern: pitch >= abs(roll) - 10
+  if (pitch_deg < abs(roll_deg) - 13) {
+    return false;
+  }
+  
+    return true;
+  }
+  
+bool validateActuatorLengths(float l1, float l2, float l3) {
+  return (l1 >= minLength && l1 <= maxLength &&
+          l2 >= minLength && l2 <= maxLength &&
+          l3 >= minLength && l3 <= maxLength);
+}
+
+float bilinearInterpolate(float x, float y, float x1, float y1, float x2, float y2, 
+                         float f11, float f12, float f21, float f22) {
+  float denom = (x2 - x1) * (y2 - y1);
+  if (abs(denom) < 0.0001) return f11; // Avoid division by zero
+  
+  float result = (f11 * (x2 - x) * (y2 - y) +
+                  f21 * (x - x1) * (y2 - y) +
+                  f12 * (x2 - x) * (y - y1) +
+                  f22 * (x - x1) * (y - y1)) / denom;
+  
+  return result;
+}
+
+bool getActuatorLengthsFromLookup(float pitch_deg, float roll_deg, float& l1, float& l2, float& l3) {
+  if (!lookupTableLoaded || !lookupTable) {
+  return false;
+  }
+  
+  // Clamp values to workspace constraints instead of rejecting them
+  float clamped_pitch = pitch_deg;
+  float clamped_roll = roll_deg;
+  
+  // Clamp to basic pitch/roll ranges
+  clamped_pitch = constrain(clamped_pitch, PITCH_MIN, PITCH_MAX);
+  clamped_roll = constrain(clamped_roll, ROLL_MIN, ROLL_MAX);
+  
+  // Apply constraint: pitch >= abs(roll) - 13
+  // If pitch is too low for the given roll, increase pitch to minimum allowed
+  float min_pitch_for_roll = abs(clamped_roll) - 13.0;
+  if (clamped_pitch < min_pitch_for_roll) {
+    clamped_pitch = min_pitch_for_roll;
+    // Re-clamp pitch to stay within absolute limits
+    clamped_pitch = constrain(clamped_pitch, PITCH_MIN, PITCH_MAX);
+  }
+  
+  // Clamp to lookup table range
+  clamped_pitch = constrain(clamped_pitch, uniquePitches[0], uniquePitches[numPitches-1]);
+  clamped_roll = constrain(clamped_roll, uniqueRolls[0], uniqueRolls[numRolls-1]);
+  
+  // Log if significant clamping occurred (for debugging, but not too frequently)
+  static unsigned long lastClampLog = 0;
+  if ((abs(clamped_pitch - pitch_deg) > 0.5 || abs(clamped_roll - roll_deg) > 0.5) && 
+      (millis() - lastClampLog > 1000)) { // Log max once per second
+    debugPrintf("[*] Clamped (%.1f°, %.1f°) → (%.1f°, %.1f°)", 
+                pitch_deg, roll_deg, clamped_pitch, clamped_roll);
+    lastClampLog = millis();
+  }
+  
+  // Use clamped values for lookup
+  pitch_deg = clamped_pitch;
+  roll_deg = clamped_roll;
+  
+  // Find bounding grid points
+  int pitch_i1 = 0, pitch_i2 = 0;
+  int roll_j1 = 0, roll_j2 = 0;
+  
+  // Find pitch indices
+  for (int i = 0; i < numPitches - 1; i++) {
+    if (pitch_deg >= uniquePitches[i] && pitch_deg <= uniquePitches[i + 1]) {
+      pitch_i1 = i;
+      pitch_i2 = i + 1;
+      break;
+    }
+  }
+  
+  // Find roll indices
+  for (int j = 0; j < numRolls - 1; j++) {
+    if (roll_deg >= uniqueRolls[j] && roll_deg <= uniqueRolls[j + 1]) {
+      roll_j1 = j;
+      roll_j2 = j + 1;
+      break;
+    }
+  }
+  
+  // Find the four corner entries in lookup table
+  float f11_l1 = 0, f12_l1 = 0, f21_l1 = 0, f22_l1 = 0;
+  float f11_l2 = 0, f12_l2 = 0, f21_l2 = 0, f22_l2 = 0;
+  float f11_l3 = 0, f12_l3 = 0, f21_l3 = 0, f22_l3 = 0;
+  
+  bool found11 = false, found12 = false, found21 = false, found22 = false;
+  
+  for (int i = 0; i < lookupTableSize; i++) {
+    float p = lookupTable[i].pitch_deg;
+    float r = lookupTable[i].roll_deg;
+    
+    if (abs(p - uniquePitches[pitch_i1]) < 0.01 && abs(r - uniqueRolls[roll_j1]) < 0.01) {
+      f11_l1 = lookupTable[i].l1; f11_l2 = lookupTable[i].l2; f11_l3 = lookupTable[i].l3;
+      found11 = true;
+    }
+    if (abs(p - uniquePitches[pitch_i1]) < 0.01 && abs(r - uniqueRolls[roll_j2]) < 0.01) {
+      f12_l1 = lookupTable[i].l1; f12_l2 = lookupTable[i].l2; f12_l3 = lookupTable[i].l3;
+      found12 = true;
+    }
+    if (abs(p - uniquePitches[pitch_i2]) < 0.01 && abs(r - uniqueRolls[roll_j1]) < 0.01) {
+      f21_l1 = lookupTable[i].l1; f21_l2 = lookupTable[i].l2; f21_l3 = lookupTable[i].l3;
+      found21 = true;
+    }
+    if (abs(p - uniquePitches[pitch_i2]) < 0.01 && abs(r - uniqueRolls[roll_j2]) < 0.01) {
+      f22_l1 = lookupTable[i].l1; f22_l2 = lookupTable[i].l2; f22_l3 = lookupTable[i].l3;
+      found22 = true;
+    }
+  }
+  
+  if (!found11 || !found12 || !found21 || !found22) {
+    debugPrint("[!] Could not find all corner points for interpolation");
+    return false;
+  }
+  
+  // Perform bilinear interpolation
+  l1 = bilinearInterpolate(pitch_deg, roll_deg, 
+                          uniquePitches[pitch_i1], uniqueRolls[roll_j1],
+                          uniquePitches[pitch_i2], uniqueRolls[roll_j2],
+                          f11_l1, f12_l1, f21_l1, f22_l1);
+  
+  l2 = bilinearInterpolate(pitch_deg, roll_deg, 
+                          uniquePitches[pitch_i1], uniqueRolls[roll_j1],
+                          uniquePitches[pitch_i2], uniqueRolls[roll_j2],
+                          f11_l2, f12_l2, f21_l2, f22_l2);
+  
+  l3 = bilinearInterpolate(pitch_deg, roll_deg, 
+                          uniquePitches[pitch_i1], uniqueRolls[roll_j1],
+                          uniquePitches[pitch_i2], uniqueRolls[roll_j2],
+                          f11_l3, f12_l3, f21_l3, f22_l3);
+  
+  return validateActuatorLengths(l1, l2, l3);
+}
+
+void cleanupLookupTable() {
+  if (lookupTable) {
+    free(lookupTable);
+    lookupTable = nullptr;
+  }
+  if (uniquePitches) {
+    free(uniquePitches);
+    uniquePitches = nullptr;
+  }
+  if (uniqueRolls) {
+    free(uniqueRolls);
+    uniqueRolls = nullptr;
+  }
+  lookupTableSize = 0;
+  numPitches = 0;
+  numRolls = 0;
+  lookupTableLoaded = false;
+}
+
+// =============================================================================
+// SMOOTHING FUNCTIONS
+// =============================================================================
+void applyIMUSmoothing(float& pitch, float& roll, float& ang_vel_x, float& ang_vel_y) {
+  // Initialize smoothing on first call
+  if (!smoothingInitialized) {
+    filteredPitch = pitch;
+    filteredRoll = roll;
+    filteredAngVelX = ang_vel_x;
+    filteredAngVelY = ang_vel_y;
+    smoothingInitialized = true;
+    debugPrint("[*] IMU smoothing initialized (pitch/roll focus)");
+    return;
+  }
+  
+  // Apply low-pass filtering (exponential moving average)
+  // New_value = alpha * raw_value + (1-alpha) * previous_filtered_value
+  filteredPitch = IMU_SMOOTHING_FACTOR * pitch + (1.0 - IMU_SMOOTHING_FACTOR) * filteredPitch;
+  filteredRoll = IMU_SMOOTHING_FACTOR * roll + (1.0 - IMU_SMOOTHING_FACTOR) * filteredRoll;
+  filteredAngVelX = IMU_SMOOTHING_FACTOR * ang_vel_x + (1.0 - IMU_SMOOTHING_FACTOR) * filteredAngVelX;
+  filteredAngVelY = IMU_SMOOTHING_FACTOR * ang_vel_y + (1.0 - IMU_SMOOTHING_FACTOR) * filteredAngVelY;
+  
+  // Update input values with filtered values
+  pitch = filteredPitch;
+  roll = filteredRoll;
+  ang_vel_x = filteredAngVelX;
+  ang_vel_y = filteredAngVelY;
+}
+
+void applyTargetRateLimiting(float newTargets[3], float previousTargets[3], float maxRate_mm_per_s, float deltaTime_s) {
+  // Limit how fast targets can change to prevent jerky movement
+  float maxChange_mm = maxRate_mm_per_s * deltaTime_s;
+  
+  for (int i = 0; i < 3; i++) {
+    float targetChange = newTargets[i] - previousTargets[i];
+    
+    // Apply deadband - ignore very small changes to reduce noise
+    if (abs(targetChange) < DEADBAND_THRESHOLD) {
+      newTargets[i] = previousTargets[i]; // No change
+      continue;
+    }
+    
+    // Rate limit the target change
+    if (abs(targetChange) > maxChange_mm) {
+      if (targetChange > 0) {
+        newTargets[i] = previousTargets[i] + maxChange_mm;
+      } else {
+        newTargets[i] = previousTargets[i] - maxChange_mm;
+      }
+    }
+  }
+}
+
+// =============================================================================
+// ADVANCED MOTION CONTROL FUNCTIONS
+// =============================================================================
+
+bool shouldProcessIMUData() {
+  // Data rate limiting - only process IMU data at maximum specified frequency
+  unsigned long currentTime = millis();
+  return (currentTime - lastIMUProcessTime >= IMU_DATA_INTERVAL_MS);
+}
+
+bool allTargetsReached() {
+  // Check if all actuators have reached their targets within tolerance
+  for (int i = 0; i < 3; i++) {
+    if (!targetsReached[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void updateTargetReachedStatus() {
+  // Update the target reached status for each actuator
+  for (int i = 0; i < 3; i++) {
+    float error = abs(targetLength[i] - estimatedLength[i]);
+    targetsReached[i] = (error <= TARGET_REACHED_TOLERANCE);
+  }
+  
+  // Debug output when targets are reached
+  static bool lastAllReached = true;
+  bool currentAllReached = allTargetsReached();
+  if (!lastAllReached && currentAllReached) {
+    debugPrint("[*] All actuator targets reached - ready for new commands");
+  } else if (lastAllReached && !currentAllReached) {
+    debugPrint("[*] Actuators moving to new targets...");
+  }
+  lastAllReached = currentAllReached;
+}
+
+void updateRealTimeTracking() {
+  // Improved real-time position tracking with load compensation
+  static unsigned long lastTrackingUpdate = 0;
+  unsigned long currentTime = millis();
+  float deltaTime_s = (currentTime - lastTrackingUpdate) / 1000.0;
+  
+  if (lastTrackingUpdate == 0) {
+    lastTrackingUpdate = currentTime;
+    return;
+  }
+  
+  for (int i = 0; i < 3; i++) {
+    // Calculate expected movement based on current motor command
+    float positionError = targetLength[i] - currentLength[i];
+    float desiredSpeed_mmPerSec = constrain(positionError * REDUCED_GAIN, -actuatorSpeed, actuatorSpeed);
+    float expectedMovement = desiredSpeed_mmPerSec * deltaTime_s;
+    
+    // Update estimated position
+    estimatedLength[i] = currentLength[i] + expectedMovement;
+    
+    // Simple load compensation - if actuator is struggling to move, reduce expected speed
+    float targetError = abs(targetLength[i] - estimatedLength[i]);
+    if (targetError > TARGET_REACHED_TOLERANCE * 2) {
+      // Actuator seems to be lagging - possibly due to load
+      loadCompensation[i] += 0.1 * deltaTime_s; // Gradually increase compensation
+      loadCompensation[i] = constrain(loadCompensation[i], 0.0, 0.5); // Max 50% reduction
+    } else {
+      // Actuator is keeping up - reduce compensation
+      loadCompensation[i] -= 0.2 * deltaTime_s; // Reduce compensation faster
+      loadCompensation[i] = constrain(loadCompensation[i], 0.0, 0.5);
+    }
+    
+    // Apply load compensation to estimated position
+    float compensationFactor = 1.0 - loadCompensation[i];
+    estimatedLength[i] = currentLength[i] + (expectedMovement * compensationFactor);
+    
+    // Keep estimated length within physical limits
+    estimatedLength[i] = constrain(estimatedLength[i], minLength, maxLength);
+  }
+  
+  // Optional: Log tracking info periodically
+  static unsigned long lastTrackingLog = 0;
+  if (currentTime - lastTrackingLog > 2000) { // Every 2 seconds
+    debugPrintf("[TRACK] Est: %.1f,%.1f,%.1f | Load: %.2f,%.2f,%.2f", 
+                estimatedLength[0], estimatedLength[1], estimatedLength[2],
+                loadCompensation[0], loadCompensation[1], loadCompensation[2]);
+    lastTrackingLog = currentTime;
+  }
+  
+  lastTrackingUpdate = currentTime;
 }
 
 // =============================================================================
 // STEWART PLATFORM KINEMATICS
 // =============================================================================
+// Computes the required length of an actuator based on platform tilt only.
+// This is the mathematical fallback when lookup table is not available
+// Heave disabled - focusing only on pitch and roll
 float computeActuatorLength(float pitchDeg, float rollDeg, float angleDeg) {
   float pitchRad = radians(pitchDeg);
   float rollRad = radians(rollDeg);
   float angleRad = radians(angleDeg);
   
-  // Compute vertical displacement for this actuator position
+  // Calculate vertical displacement (dz) due to platform tilt
   float dz = armRadius * (sin(pitchRad) * cos(angleRad) + sin(rollRad) * sin(angleRad));
   
-  // Calculate target length (home position + displacement)
-  float target = homeLength + dz;
+  // Use neutral length as baseline
+  // For this mathematical approximation, we'll use a weighted average of neutral lengths
+  float baseLength = (neutralLength[0] + neutralLength[1] + neutralLength[2]) / 3.0;
   
-  // Constrain to actuator limits
+  // Calculate final target length including base position and tilt (no heave)
+  float target = baseLength + dz;
+
+  // Ensure the target length is within the physical limits of the actuator
   return constrain(target, minLength, maxLength);
 }
 
 // =============================================================================
 // SMOOTH ACTUATOR CONTROL
 // =============================================================================
+// Moves actuators towards their target lengths incrementally.
 void updateActuatorsSmoothly() {
-  float maxStep = actuatorSpeed * updateInterval / 1000.0;
-  
   for (int i = 0; i < 3; i++) {
-    currentLength[i] = stepTowards(currentLength[i], targetLength[i], maxStep);
+    // Calculate required speed based on position error and maximum actuator speed
+    float positionError = targetLength[i] - currentLength[i];
     
-    // Calculate speed for this motor (-255 to +255)
-    static float lastLength[3] = {minLength, minLength, minLength};
-    float delta = currentLength[i] - lastLength[i];
-    int speed = constrain(delta * 50, -255, 255); // Scale factor for responsiveness
+    // Calculate desired speed in mm/s based on position error
+    // Use proportional control: larger error = faster speed, up to actuatorSpeed limit
+    float maxAllowedSpeed = actuatorSpeed; // 84 mm/s at 100% duty cycle (PWM 255)
+    float desiredSpeed_mmPerSec;
     
-    setMotorSpeed(i + 1, speed); // Motors are numbered 1, 2, 3
-    lastLength[i] = currentLength[i];
+    // Proportional control with saturation (reduced gain for smoother response)
+    desiredSpeed_mmPerSec = positionError * REDUCED_GAIN;
+    
+    // Limit to maximum actuator speed
+    desiredSpeed_mmPerSec = constrain(desiredSpeed_mmPerSec, -maxAllowedSpeed, maxAllowedSpeed);
+    
+    // Convert desired speed (mm/s) to PWM value (0-255)
+    // Since actuatorSpeed (84 mm/s) corresponds to PWM 255 (100% duty cycle)
+    int pwmValue = (int)((abs(desiredSpeed_mmPerSec) / actuatorSpeed) * 255.0);
+    pwmValue = constrain(pwmValue, 0, 255);
+    
+    // Apply direction (positive = extend, negative = retract)
+    int motorSpeed = (desiredSpeed_mmPerSec >= 0) ? pwmValue : -pwmValue;
+    
+    // Update current position based on actual movement that will occur
+    // Calculate actual speed that will be achieved with this PWM
+    float actualSpeed_mmPerSec = (motorSpeed / 255.0) * actuatorSpeed;
+    float actualMovement_mm = actualSpeed_mmPerSec * (updateInterval / 1000.0);
+    currentLength[i] += actualMovement_mm;
+    
+    // Prevent overshoot - if we're very close, just set to target
+    if (abs(targetLength[i] - currentLength[i]) < 0.5) { // Within 0.5mm
+      currentLength[i] = targetLength[i];
+      motorSpeed = 0; // Stop motor when at target
+    }
+    
+    // Motors are numbered 1, 2, 3 in setMotorSpeed
+    setMotorSpeed(i + 1, motorSpeed); 
   }
 }
 
+// Helper function to move a value towards a target by a maximum step.
 float stepTowards(float current, float target, float maxStep) {
-  float delta = target - current;
-  if (abs(delta) <= maxStep) return target;
-  return current + (delta > 0 ? maxStep : -maxStep);
-}
-
-// =============================================================================
-// MOTOR CONTROL FUNCTIONS
-// =============================================================================
-void setMotorSpeed(int motor, int speed) {
-  // speed: -255 (full reverse) to +255 (full forward)
-  int pwmValue = abs(speed);
-  bool direction = (speed >= 0);
-  
-  switch (motor) {
-    case 1: // Motor 1
-      ledcWrite(MOTOR1_LPWM_CHANNEL, direction ? 0 : pwmValue);
-      ledcWrite(MOTOR1_RPWM_CHANNEL, direction ? pwmValue : 0);
-      break;
-      
-    case 2: // Motor 2  
-      ledcWrite(MOTOR2_LPWM_CHANNEL, direction ? 0 : pwmValue);
-      ledcWrite(MOTOR2_RPWM_CHANNEL, direction ? pwmValue : 0);
-      break;
-      
-    case 3: // Motor 3
-      ledcWrite(MOTOR3_LPWM_CHANNEL, direction ? 0 : pwmValue);
-      ledcWrite(MOTOR3_RPWM_CHANNEL, direction ? pwmValue : 0);
-      break;
+  if (abs(target - current) <= maxStep) {
+    return target;
   }
-}
-
-void stopAllMotors() {
-  for (int i = 1; i <= 3; i++) {
-    setMotorSpeed(i, 0);
-  }
-}
-
-// =============================================================================
-// PIN INITIALIZATION FUNCTIONS (from pin_definitions.cpp)
-// =============================================================================
-void initializePins() {
-  // Set PWM pins as outputs (automatically handled by ledcAttachPin)
-  // Set current sense pins as inputs
-  pinMode(MOTOR1_L_IS, INPUT);
-  pinMode(MOTOR1_R_IS, INPUT);
-  pinMode(MOTOR2_L_IS, INPUT);
-  pinMode(MOTOR2_R_IS, INPUT);
-  pinMode(MOTOR3_L_IS, INPUT);
-  pinMode(MOTOR3_R_IS, INPUT);
-}
-
-void setupPWM() {
-  // Setup PWM channels for all motors
-  ledcSetup(MOTOR1_LPWM_CHANNEL, PWM_FREQUENCY, PWM_RESOLUTION);
-  ledcSetup(MOTOR1_RPWM_CHANNEL, PWM_FREQUENCY, PWM_RESOLUTION);
-  ledcSetup(MOTOR2_LPWM_CHANNEL, PWM_FREQUENCY, PWM_RESOLUTION);
-  ledcSetup(MOTOR2_RPWM_CHANNEL, PWM_FREQUENCY, PWM_RESOLUTION);
-  ledcSetup(MOTOR3_LPWM_CHANNEL, PWM_FREQUENCY, PWM_RESOLUTION);
-  ledcSetup(MOTOR3_RPWM_CHANNEL, PWM_FREQUENCY, PWM_RESOLUTION);
-  
-  // Attach pins to PWM channels
-  ledcAttachPin(MOTOR1_LPWM, MOTOR1_LPWM_CHANNEL);
-  ledcAttachPin(MOTOR1_RPWM, MOTOR1_RPWM_CHANNEL);
-  ledcAttachPin(MOTOR2_LPWM, MOTOR2_LPWM_CHANNEL);
-  ledcAttachPin(MOTOR2_RPWM, MOTOR2_RPWM_CHANNEL);
-  ledcAttachPin(MOTOR3_LPWM, MOTOR3_LPWM_CHANNEL);
-  ledcAttachPin(MOTOR3_RPWM, MOTOR3_RPWM_CHANNEL);
+  return current + (target > current ? maxStep : -maxStep);
 } 
