@@ -200,6 +200,26 @@ class MyClientCallback : public NimBLEClientCallbacks {
 
   void onDisconnect(NimBLEClient* pclient, int reason) override {
     debugPrintf("NIMBLE CLIENT CALLBACK: Disconnected from IMU device (reason: %d)", reason);
+    
+    // Provide more detailed explanation for common error codes
+    switch(reason) {
+      case 534: // 0x216 - Local Host Terminated Connection  
+        debugPrint("  -> Reason 534: ESP32 initiated disconnect (likely service connection failure)");
+        break;
+      case 531: // 0x213 - Remote User Terminated Connection
+        debugPrint("  -> Reason 531: IMU device disconnected");
+        break;
+      case 8:   // Connection timeout
+        debugPrint("  -> Reason 8: Connection timeout");
+        break;
+      case 22:  // 0x16 - Connection terminated by local host
+        debugPrint("  -> Reason 22: Local host terminated connection");
+        break;
+      default:
+        debugPrintf("  -> Unknown reason: %d (0x%02X)", reason, reason);
+        break;
+    }
+    
     bleConnected = false;
     bleConnecting = false;
     pRemoteCharacteristic = nullptr;  // Reset characteristic pointer
@@ -328,7 +348,14 @@ void loop() {
   
   // Handle BLE connection state with retry delay
   static unsigned long lastScanTime = 0;
+  static unsigned long lastConnStatusReport = 0;
     if (!bleConnected && !bleConnecting && systemHomed) {
+    // Report connection status every 5 seconds when disconnected
+    if (millis() - lastConnStatusReport > 5000) {
+      debugPrint("BLE Status: Disconnected, waiting to retry...");
+      lastConnStatusReport = millis();
+    }
+    
     if (millis() - lastScanTime > 10000) { // Wait 10 seconds between scan attempts
       debugPrint("Attempting to connect to IMU...");
       scanForIMU();
@@ -336,19 +363,40 @@ void loop() {
     }
   }
   
-  // Try to establish service connection after BLE connection
+  // Try to establish service connection after BLE connection with retry logic
+  static unsigned long lastServiceAttemptTime = 0;
+  static int serviceAttemptCount = 0;
+  const int MAX_SERVICE_ATTEMPTS = 3;
+  
   if (bleConnected && pRemoteCharacteristic == nullptr) {
-    debugPrint(">>> BLE connected, establishing service connection...");
-    if (connectToIMU()) {
-      debugPrint(">>> Service connection established successfully");
-  } else {
-      debugPrint(">>> Failed to establish service connection");
-      // If service connection fails, disconnect and retry
-      bleConnected = false;
-      if (pClient != nullptr) {
-        pClient->disconnect();
+    // Only attempt service connection every 2 seconds to avoid flooding
+    if (millis() - lastServiceAttemptTime > 2000) {
+      serviceAttemptCount++;
+      debugPrintf(">>> BLE connected, establishing service connection... (attempt %d/%d)", 
+                  serviceAttemptCount, MAX_SERVICE_ATTEMPTS);
+      
+      if (connectToIMU()) {
+        debugPrint(">>> Service connection established successfully");
+        serviceAttemptCount = 0; // Reset counter on success
+      } else {
+        debugPrintf(">>> Failed to establish service connection (attempt %d/%d)", 
+                    serviceAttemptCount, MAX_SERVICE_ATTEMPTS);
+        
+        if (serviceAttemptCount >= MAX_SERVICE_ATTEMPTS) {
+          debugPrint(">>> Max service connection attempts reached, disconnecting...");
+          // If service connection fails after max attempts, disconnect and retry
+          bleConnected = false;
+          serviceAttemptCount = 0; // Reset counter
+          if (pClient != nullptr) {
+            pClient->disconnect();
+          }
+        }
       }
+      lastServiceAttemptTime = millis();
     }
+  } else if (bleConnected && pRemoteCharacteristic != nullptr) {
+    // Reset attempt counter when we have a successful connection
+    serviceAttemptCount = 0;
   }
   
   // Update actuators at regular intervals (only after homing is complete)
@@ -563,52 +611,68 @@ bool connectToIMU() {
     return false;
   }
   
-  debugPrint("*** Getting IMU service...");
+  debugPrintf("*** Getting IMU service (UUID: %s)...", SERVICE_UUID.toString().c_str());
   NimBLERemoteService* pRemoteService = pClient->getService(SERVICE_UUID);
   debugPrint("*** getService() call completed");
   
   if (pRemoteService == nullptr) {
-    debugPrint("*** Failed to find IMU service");
+    debugPrint("*** FAILED to find IMU service - showing all available services:");
+    // List all available services for debugging
+    auto pServices = pClient->getServices(true);
+    debugPrintf("*** Found %d services:", pServices.size());
+    for (auto& pService : pServices) {
+      debugPrintf("  - Service UUID: %s", pService->getUUID().toString().c_str());
+    }
     return false;
   }
   
-  debugPrint("*** Getting IMU characteristic...");
+  debugPrintf("*** SUCCESS: Found IMU service. Getting characteristic (UUID: %s)...", CHAR_UUID.toString().c_str());
   pRemoteCharacteristic = pRemoteService->getCharacteristic(CHAR_UUID);
   debugPrint("*** getCharacteristic() call completed");
+  
   if (pRemoteCharacteristic == nullptr) {
-    debugPrint("Failed to find IMU characteristic");
-    
-    // Try to get all characteristics and show what's available
-    debugPrint("Available characteristics:");
+    debugPrint("*** FAILED to find IMU characteristic - showing all available characteristics:");
     auto pChars = pRemoteService->getCharacteristics(true);
+    debugPrintf("*** Found %d characteristics:", pChars.size());
     for (auto& pChar : pChars) {
-      debugPrintf("  - %s", pChar->getUUID().toString().c_str());
+      debugPrintf("  - Characteristic UUID: %s", pChar->getUUID().toString().c_str());
+      debugPrintf("    Properties: Read=%s, Write=%s, Notify=%s", 
+                  pChar->canRead() ? "Y" : "N",
+                  pChar->canWrite() ? "Y" : "N", 
+                  pChar->canNotify() ? "Y" : "N");
     }
     return false;
   }
   
-  debugPrint("Found IMU characteristic, setting up notifications...");
+  debugPrint("*** SUCCESS: Found IMU characteristic, setting up notifications...");
+  
+  // Check if characteristic supports notifications
+  if (!pRemoteCharacteristic->canNotify()) {
+    debugPrint("*** FAILED: Characteristic does not support notifications");
+    return false;
+  }
   
   // Use NimBLE's subscribe method instead of registerForNotify
-  if (pRemoteCharacteristic->canNotify()) {
-    if (pRemoteCharacteristic->subscribe(true, onNotify)) {
-      debugPrint("NimBLE notifications subscribed successfully");
+  debugPrint("*** Subscribing to notifications...");
+  if (pRemoteCharacteristic->subscribe(true, onNotify)) {
+    debugPrint("*** SUCCESS: NimBLE notifications subscribed successfully");
     return true;
+  } else {
+    debugPrint("*** FAILED: Could not subscribe to notifications");
+    // Try indications as fallback
+    if (pRemoteCharacteristic->canIndicate()) {
+      debugPrint("*** Trying indications as fallback...");
+      if (pRemoteCharacteristic->subscribe(false, onNotify)) {
+        debugPrint("*** SUCCESS: NimBLE indications subscribed successfully");
+        return true;
+      } else {
+        debugPrint("*** FAILED: Could not subscribe to indications");
+        return false;
+      }
     } else {
-      debugPrint("Failed to subscribe to notifications");
+      debugPrint("*** FAILED: Characteristic does not support notifications or indications");
       return false;
     }
-  } else if (pRemoteCharacteristic->canIndicate()) {
-    if (pRemoteCharacteristic->subscribe(false, onNotify)) {
-      debugPrint("NimBLE indications subscribed successfully");
-      return true;
-    } else {
-      debugPrint("Failed to subscribe to indications");
-  return false;
-}
-  } else {
-    debugPrint("Characteristic does not support notifications or indications");
-    return false;
   }
 }
 
