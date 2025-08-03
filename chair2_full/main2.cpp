@@ -38,14 +38,14 @@ const float rollCueFactor = 0.1;  // degrees of extra roll per °/s
 
 // -- Smoothing Parameters
 const float IMU_SMOOTHING_FACTOR = 0.3; // Low-pass filter strength (user adjusted)
-const float TARGET_RATE_LIMIT = 2.0; // mm/s max rate of target change
-const float DEADBAND_THRESHOLD = 0.5; // mm - ignore changes smaller than this
+const float TARGET_RATE_LIMIT = 20.0; // mm/s max rate of target change (INCREASED FOR DEBUG)
+const float DEADBAND_THRESHOLD = 0.1; // mm - ignore changes smaller than this (REDUCED FOR DEBUG)
 const float REDUCED_GAIN = 4.0; // Reduced gain for smoother response
 
-// -- Advanced Motion Control Parameters
-const bool ENABLE_DATA_RATE_LIMITING = true;    // Limit IMU data processing rate
+// -- Advanced Motion Control Parameters (TEMPORARILY DISABLED FOR DEBUG)
+const bool ENABLE_DATA_RATE_LIMITING = false;   // Limit IMU data processing rate (DISABLED)
 const unsigned long IMU_DATA_INTERVAL_MS = 50;  // Process IMU data max every 50ms (20Hz)
-const bool ENABLE_SEQUENTIAL_TARGETING = true;  // Wait for actuators to reach target before new targets
+const bool ENABLE_SEQUENTIAL_TARGETING = false; // Wait for actuators to reach target before new targets (DISABLED)
 const float TARGET_REACHED_TOLERANCE = 2.0;     // mm - tolerance for "target reached"
 const bool ENABLE_REAL_TIME_TRACKING = true;    // Improved position tracking with load compensation
 
@@ -684,12 +684,14 @@ void processIMUData() {
   
   // 1. Data Rate Limiting - only process at maximum specified rate
   if (ENABLE_DATA_RATE_LIMITING && !shouldProcessIMUData()) {
+    debugPrint("[DEBUG] IMU processing skipped: Data rate limiting active");
     return; // Skip this data point
   }
   lastIMUProcessTime = millis();
   
   // 2. Sequential Targeting - only accept new targets when current ones are reached
   if (ENABLE_SEQUENTIAL_TARGETING && !allTargetsReached()) {
+    debugPrint("[DEBUG] IMU processing skipped: Waiting for targets to be reached");
     return; // Wait for current targets to be reached
   }
   
@@ -699,8 +701,15 @@ void processIMUData() {
   float ang_vel_x = imuData.wx;
   float ang_vel_y = imuData.wy;
   
+  // Debug: Show raw IMU values
+  debugPrintf("[DEBUG] Raw IMU: P:%.2f° R:%.2f° Wx:%.1f°/s Wy:%.1f°/s", 
+              pitch, roll, ang_vel_x, ang_vel_y);
+  
   // Apply IMU smoothing
   applyIMUSmoothing(pitch, roll, ang_vel_x, ang_vel_y);
+  
+  // Debug: Show smoothed values
+  debugPrintf("[DEBUG] Smoothed IMU: P:%.2f° R:%.2f°", pitch, roll);
   
   // Motion cueing from angular velocity (no heave)
   float pitch_with_cue = pitch + (ang_vel_y * pitchCueFactor);
@@ -745,11 +754,21 @@ void processIMUData() {
     applyTargetRateLimiting(newTargets, previousTargets, TARGET_RATE_LIMIT, deltaTime_s);
   }
   
+  // Debug: Show calculated targets before rate limiting
+  debugPrintf("[DEBUG] Calculated targets: %.1f,%.1f,%.1f mm", 
+              newTargets[0], newTargets[1], newTargets[2]);
+  debugPrintf("[DEBUG] Previous targets: %.1f,%.1f,%.1f mm", 
+              previousTargets[0], previousTargets[1], previousTargets[2]);
+  
   // Update target lengths with smoothed values
   for (int i = 0; i < 3; i++) {
     targetLength[i] = newTargets[i];
     previousTargets[i] = newTargets[i];
   }
+  
+  // Debug: Show final targets after rate limiting
+  debugPrintf("[DEBUG] Final targets: %.1f,%.1f,%.1f mm", 
+              targetLength[0], targetLength[1], targetLength[2]);
   
   // Optional: Log received data to serial for debugging
   static unsigned long lastLogTime = 0;
@@ -1154,11 +1173,17 @@ void applyTargetRateLimiting(float newTargets[3], float previousTargets[3], floa
   // Limit how fast targets can change to prevent jerky movement
   float maxChange_mm = maxRate_mm_per_s * deltaTime_s;
   
+  debugPrintf("[DEBUG] Rate limiting: maxChange=%.2f mm, deltaTime=%.3f s", maxChange_mm, deltaTime_s);
+  
   for (int i = 0; i < 3; i++) {
     float targetChange = newTargets[i] - previousTargets[i];
     
+    debugPrintf("[DEBUG] Motor %d: change=%.2f mm (threshold=%.1f mm)", 
+                i+1, targetChange, DEADBAND_THRESHOLD);
+    
     // Apply deadband - ignore very small changes to reduce noise
     if (abs(targetChange) < DEADBAND_THRESHOLD) {
+      debugPrintf("[DEBUG] Motor %d: Change below deadband, ignored", i+1);
       newTargets[i] = previousTargets[i]; // No change
       continue;
     }
