@@ -212,9 +212,10 @@ void scanForIMU() {
   pScan->setActiveScan(true);
   
   // Start scan 
-  NimBLEScanResults results = pScan->start(10, false); // Scan for 10 seconds
+  bool scanStarted = pScan->start(5000, false); // Scan for 5 seconds
   
   // Scan completed
+  NimBLEScanResults results = pScan->getResults();
   debugPrintf("Scan completed. Found %d devices total", results.getCount());
   
   // Check if we found our target device
@@ -283,8 +284,8 @@ bool connectToIMU() {
     
     // Try to get all characteristics and show what's available
     debugPrint("Available characteristics:");
-    std::vector<NimBLERemoteCharacteristic*>* pChars = pRemoteService->getCharacteristics(true);
-    for (auto& pChar : *pChars) {
+    const std::vector<NimBLERemoteCharacteristic*>& pChars = pRemoteService->getCharacteristics(true);
+    for (auto& pChar : pChars) {
       debugPrintf("  - %s", pChar->getUUID().toString().c_str());
     }
     return false;
