@@ -1,14 +1,18 @@
 #include <Arduino.h>
-#include <NimBLEDevice.h>
+#include <BLEDevice.h>
+#include <BLEClient.h>
+#include <BLEUtils.h>
+#include <BLEScan.h>
+#include <BLEAdvertisedDevice.h>
 #include <FS.h>
 #include <SPIFFS.h>
 #include "pin_definitions.h"
 
 // =============================================================================
-// STEWART PLATFORM REALTIME IMU CONTROL - FINAL VERSION
+// STEWART PLATFORM REALTIME IMU CONTROL - FINAL VERSION WITH REGULAR BLE
 // =============================================================================
 // Integrates:
-// - NimBLE IMU connectivity 
+// - Regular BLE IMU connectivity (from imu_monitor.cpp)
 // - Lookup table with bilinear interpolation
 // - Smoothing and rate limiting for smooth motion
 // - Focus on pitch/roll only (no heave)
@@ -55,9 +59,9 @@ const float PITCH_MAX = 15.0;    // degrees
 const float ROLL_MIN = -15.0;    // degrees
 const float ROLL_MAX = 15.0;     // degrees
 
-// -- BLE Configuration
-static NimBLEUUID SERVICE_UUID("0000ffe5-0000-1000-8000-00805f9a34fb");
-static NimBLEUUID CHAR_UUID("0000ffe4-0000-1000-8000-00805f9a34fb");
+// -- BLE Configuration - REPLACE WITH YOUR IMU'S ACTUAL UUIDs
+static BLEUUID SERVICE_UUID("0000ffe5-0000-1000-8000-00805f9a34fb");    // Update for your device
+static BLEUUID CHAR_UUID("0000ffe4-0000-1000-8000-00805f9a34fb");       // Update for your device
 
 // =============================================================================
 // LOOKUP TABLE STRUCTURES
@@ -98,12 +102,12 @@ struct IMUData {
 // =============================================================================
 // GLOBAL VARIABLES
 // =============================================================================
-// -- BLE Variables
-NimBLEClient* pClient = nullptr;
-NimBLERemoteCharacteristic* pRemoteCharacteristic = nullptr;
+// -- BLE Variables (using regular BLE instead of NimBLE)
+BLEClient* pClient = nullptr;
+BLERemoteCharacteristic* pRemoteCharacteristic = nullptr;
 bool bleConnected = false;
 bool bleConnecting = false;
-const NimBLEAdvertisedDevice* targetDevice = nullptr;
+BLEAdvertisedDevice* targetDevice = nullptr;
 bool deviceFound = false;
 unsigned long connectionStartTime = 0;
 
@@ -152,11 +156,11 @@ int packetCount = 0;
 void initializeSystem();
 void performHomingSequence();
 
-// BLE functions
+// BLE functions (using regular BLE instead of NimBLE)
 bool initializeBLE();
 void scanForIMU();
 bool connectToIMU();
-void onNotify(NimBLERemoteCharacteristic* pRemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
+void onNotify(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
 
 // IMU data processing
 bool parseFullIMUPacket(uint8_t* data, size_t length);
@@ -189,60 +193,50 @@ void updateActuatorsSmoothly();
 float stepTowards(float current, float target, float maxStep);
 
 // =============================================================================
-// BLE CALLBACK CLASSES
+// BLE CALLBACK CLASSES (using regular BLE instead of NimBLE)
 // =============================================================================
-class MyClientCallback : public NimBLEClientCallbacks {
-  void onConnect(NimBLEClient* pclient) override {
-    debugPrint("NIMBLE CLIENT CALLBACK: Connected to IMU device");
+class MyClientCallback : public BLEClientCallbacks {
+  void onConnect(BLEClient* pclient) override {
+    debugPrint("BLE CLIENT CALLBACK: Connected to IMU device");
     bleConnected = true;
     bleConnecting = false;
   }
 
-  void onDisconnect(NimBLEClient* pclient, int reason) override {
-    debugPrintf("NIMBLE CLIENT CALLBACK: Disconnected from IMU device (reason: %d)", reason);
+  void onDisconnect(BLEClient* pclient) override {
+    debugPrint("BLE CLIENT CALLBACK: Disconnected from IMU device");
     bleConnected = false;
     bleConnecting = false;
     pRemoteCharacteristic = nullptr;  // Reset characteristic pointer
   }
 };
 
-class MyScanCallbacks: public NimBLEScanCallbacks {
-  void onResult(const NimBLEAdvertisedDevice* advertisedDevice) override {
-    debugPrintf("Found device: %s", advertisedDevice->toString().c_str());
-    debugPrintf("  - Name: %s", advertisedDevice->getName().c_str());
-    debugPrintf("  - Address: %s", advertisedDevice->getAddress().toString().c_str());
-    debugPrintf("  - RSSI: %d", advertisedDevice->getRSSI());
+class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
+  void onResult(BLEAdvertisedDevice advertisedDevice) override {
+    debugPrintf("Found device: %s", advertisedDevice.toString().c_str());
+    debugPrintf("  - Name: %s", advertisedDevice.getName().c_str());
+    debugPrintf("  - Address: %s", advertisedDevice.getAddress().toString().c_str());
+    debugPrintf("  - RSSI: %d", advertisedDevice.getRSSI());
     
     // Show all service UUIDs this device advertises
-    if (advertisedDevice->haveServiceUUID()) {
+    if (advertisedDevice.haveServiceUUID()) {
       debugPrint("  - Advertised Service UUIDs:");
-      for (int i = 0; i < advertisedDevice->getServiceUUIDCount(); i++) {
-        debugPrintf("    * %s", advertisedDevice->getServiceUUID(i).toString().c_str());
+      for (int i = 0; i < advertisedDevice.getServiceUUIDCount(); i++) {
+        debugPrintf("    * %s", advertisedDevice.getServiceUUID(i).toString().c_str());
       }
     } else {
       debugPrint("  - No service UUIDs advertised");
     }
     
     // Check if this device has our service UUID
-    if (advertisedDevice->haveServiceUUID() && advertisedDevice->isAdvertisingService(SERVICE_UUID)) {
+    if (advertisedDevice.haveServiceUUID() && advertisedDevice.isAdvertisingService(SERVICE_UUID)) {
       debugPrint("Found target IMU device! Stopping scan...");
       deviceFound = true;
-      targetDevice = advertisedDevice;
-      
-      // Stop the scan immediately
-      NimBLEScan* pScan = NimBLEDevice::getScan();
-      if (pScan->isScanning()) {
-        pScan->stop();
-        debugPrint("Scan stopped due to target device found.");
-      }
-      } else {
+      targetDevice = new BLEAdvertisedDevice(advertisedDevice);
+      BLEDevice::getScan()->stop();
+    } else {
       debugPrint("  - Does not match our target service UUID");
-      }
-    debugPrint("  ---");
     }
-
-  void onScanEnd(const NimBLEScanResults& results, int reason) override {
-    debugPrintf("Scan ended. Found %d devices, reason: %d", results.getCount(), reason);
+    debugPrint("  ---");
   }
 };
 
@@ -253,7 +247,7 @@ void setup() {
   setupDebugUART0();  // Use UART0 for debugging as requested
   delay(1000);
   
-  debugPrint("\n==== Stewart Platform Real-time IMU Control (Final Version) ====");
+  debugPrint("\n==== Stewart Platform Real-time IMU Control (Final Version with Regular BLE) ====");
     
   // Initialize system components
     initializeSystem();
@@ -273,13 +267,13 @@ void setup() {
     }
   }
   
-  // Initialize NimBLE
-  debugPrint("Initializing NimBLE...");
+  // Initialize regular BLE
+  debugPrint("Initializing BLE...");
     if (initializeBLE()) {
-    debugPrint("[✓] NimBLE initialized successfully");
+    debugPrint("[✓] BLE initialized successfully");
       scanForIMU();
     } else {
-    debugPrint("[!] NimBLE initialization failed!");
+    debugPrint("[!] BLE initialization failed!");
       return;
     }
   
@@ -287,7 +281,7 @@ void setup() {
   performHomingSequence();
   
   debugPrint("[✓] System initialized and ready for IMU control");
-  debugPrint("Waiting for IMU data packets via NimBLE...");
+  debugPrint("Waiting for IMU data packets via BLE...");
   debugPrint("---------------------------------------------------------------");
 }
 
@@ -321,7 +315,7 @@ void loop() {
     bleConnecting = false;
     if (pClient != nullptr) {
       pClient->disconnect();
-      NimBLEDevice::deleteClient(pClient);
+      delete pClient;
       pClient = nullptr;
     }
   }
@@ -468,12 +462,10 @@ void performHomingSequence() {
 }
 
 // =============================================================================
-// BLE INITIALIZATION AND CONNECTION
+// BLE INITIALIZATION AND CONNECTION (using regular BLE instead of NimBLE)
 // =============================================================================
 bool initializeBLE() {
-  NimBLEDevice::init("Stewart_Platform_Control");
-  // Optional: Set transmit power
-  NimBLEDevice::setPower(3); // 3dBm
+  BLEDevice::init("Stewart_Platform_Control");
   return true;
 }
 
@@ -482,37 +474,27 @@ void scanForIMU() {
   
   // Reset flags
   deviceFound = false;
-  targetDevice = nullptr;
+  if (targetDevice != nullptr) {
+    delete targetDevice;
+    targetDevice = nullptr;
+  }
   
   bleConnecting = true;
   debugPrint("Scanning for IMU device...");
   debugPrintf("Looking for service UUID: %s", SERVICE_UUID.toString().c_str());
-  debugPrint("Scan will run for 5 seconds...");
+  debugPrint("Scan will run for 10 seconds...");
   
-  NimBLEScan* pScan = NimBLEDevice::getScan();
-  pScan->setScanCallbacks(new MyScanCallbacks(), false);
-  pScan->setInterval(1349);
-  pScan->setWindow(449);
-  pScan->setActiveScan(true);
+  BLEScan* pBLEScan = BLEDevice::getScan();
+  pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
+  pBLEScan->setInterval(1349);
+  pBLEScan->setWindow(449);
+  pBLEScan->setActiveScan(true);
   
   // Start scan 
-  pScan->start(5000, false); // Scan for 5 seconds - async, results handled in callbacks
+  BLEScanResults foundDevices = pBLEScan->start(10, false); // Scan for 10 seconds
   
-  // Wait for scan to complete or device to be found
-  unsigned long scanStartTime = millis();
-  while (pScan->isScanning() && millis() - scanStartTime < 6000) { // Wait up to 6 seconds
-    delay(100);
-    if (deviceFound) {
-      break; // Exit early if device found
-    }
-  }
-  
-  // Ensure scan is stopped
-  if (pScan->isScanning()) {
-    pScan->stop();
-  }
-  
-  debugPrint("Scan completed.");
+  // Scan completed
+  debugPrintf("Scan completed. Found %d devices total", foundDevices.getCount());
   
   // Check if we found our target device
   if (deviceFound && targetDevice != nullptr) {
@@ -521,15 +503,11 @@ void scanForIMU() {
     // Clean up any existing client
     if (pClient != nullptr) {
       pClient->disconnect();
-      NimBLEDevice::deleteClient(pClient);
+      delete pClient;
     }
     
-    pClient = NimBLEDevice::createClient();
+    pClient = BLEDevice::createClient();
     pClient->setClientCallbacks(new MyClientCallback());
-    
-    // Set connection parameters for better stability
-    pClient->setConnectionParams(12, 12, 0, 150);
-    pClient->setConnectTimeout(5000); // 5 second timeout
     
     connectionStartTime = millis();
     debugPrint("Calling pClient->connect()...");
@@ -545,7 +523,7 @@ void scanForIMU() {
       debugPrint("Failed to establish BLE connection");
       bleConnecting = false;
       // Clean up failed client
-      NimBLEDevice::deleteClient(pClient);
+      delete pClient;
       pClient = nullptr;
     }
   } else {
@@ -564,7 +542,7 @@ bool connectToIMU() {
   }
   
   debugPrint("*** Getting IMU service...");
-  NimBLERemoteService* pRemoteService = pClient->getService(SERVICE_UUID);
+  BLERemoteService* pRemoteService = pClient->getService(SERVICE_UUID);
   debugPrint("*** getService() call completed");
   
   if (pRemoteService == nullptr) {
@@ -580,34 +558,32 @@ bool connectToIMU() {
     
     // Try to get all characteristics and show what's available
     debugPrint("Available characteristics:");
-    auto pChars = pRemoteService->getCharacteristics(true);
-    for (auto& pChar : pChars) {
-      debugPrintf("  - %s", pChar->getUUID().toString().c_str());
+    std::map<std::string, BLERemoteCharacteristic*>* charMap = pRemoteService->getCharacteristics();
+    for (auto& pair : *charMap) {
+      debugPrintf("  - %s", pair.first.c_str());
     }
     return false;
   }
   
   debugPrint("Found IMU characteristic, setting up notifications...");
   
-  // Use NimBLE's subscribe method instead of registerForNotify
-  if (pRemoteCharacteristic->canNotify()) {
-    if (pRemoteCharacteristic->subscribe(true, onNotify)) {
-      debugPrint("NimBLE notifications subscribed successfully");
-    return true;
+  // Try to register for notifications without checking descriptors first
+  try {
+    pRemoteCharacteristic->registerForNotify(onNotify);
+    debugPrint("BLE notifications registered successfully");
+    
+    // Try to subscribe to notifications by writing to CCCD
+    uint8_t notificationOn[] = {0x1, 0x0};
+    if (pRemoteCharacteristic->getDescriptor(BLEUUID((uint16_t)0x2902)) != nullptr) {
+      pRemoteCharacteristic->getDescriptor(BLEUUID((uint16_t)0x2902))->writeValue((uint8_t*)notificationOn, 2, true);
+      debugPrint("CCCD descriptor written");
     } else {
-      debugPrint("Failed to subscribe to notifications");
-      return false;
+      debugPrint("No CCCD descriptor found, but notification callback registered");
     }
-  } else if (pRemoteCharacteristic->canIndicate()) {
-    if (pRemoteCharacteristic->subscribe(false, onNotify)) {
-      debugPrint("NimBLE indications subscribed successfully");
-      return true;
-    } else {
-      debugPrint("Failed to subscribe to indications");
-  return false;
-}
-  } else {
-    debugPrint("Characteristic does not support notifications or indications");
+    
+    return true;
+  } catch (std::exception& e) {
+    debugPrintf("Exception during notification setup: %s", e.what());
     return false;
   }
 }
@@ -615,8 +591,8 @@ bool connectToIMU() {
 // =============================================================================
 // IMU DATA PROCESSING  
 // =============================================================================
-// NimBLE notification callback
-void onNotify(NimBLERemoteCharacteristic* pRemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
+// BLE notification callback
+void onNotify(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
   debugPrintf("🔔 NOTIFICATION RECEIVED! %d bytes", length);
   
   if (parseFullIMUPacket(pData, length)) {
@@ -1364,4 +1340,4 @@ float stepTowards(float current, float target, float maxStep) {
     return target;
   }
   return current + (target > current ? maxStep : -maxStep);
-} 
+}

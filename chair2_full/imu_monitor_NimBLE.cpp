@@ -80,6 +80,12 @@ class MyClientCallback : public NimBLEClientCallbacks {
 // NimBLE Scan Callbacks
 class MyScanCallbacks: public NimBLEScanCallbacks {
   void onResult(const NimBLEAdvertisedDevice* advertisedDevice) override {
+    // Skip processing if we already found our target device
+    if (deviceFound) {
+      debugPrint(">>> Ignoring additional device - target already found");
+      return;
+    }
+    
     debugPrintf("Found device: %s", advertisedDevice->toString().c_str());
     debugPrintf("  - Name: %s", advertisedDevice->getName().c_str());
     debugPrintf("  - Address: %s", advertisedDevice->getAddress().toString().c_str());
