@@ -234,7 +234,11 @@ void scanForIMU() {
   // Get scan results after completion
   NimBLEScanResults results = pScan->getResults();
   debugPrintf("Scan completed. Found %d devices total", results.getCount());
-  debugPrintf(">>> Immediately after getResults(): deviceFound=%s, targetDevice=%s", 
+  
+  // Give callbacks time to complete (NimBLE timing issue workaround)
+  delay(100);
+  
+  debugPrintf(">>> After delay, getResults(): deviceFound=%s, targetDevice=%s", 
               deviceFound ? "true" : "false", 
               targetDevice ? "valid" : "null");
   
@@ -242,6 +246,9 @@ void scanForIMU() {
   debugPrintf("Post-scan check: deviceFound=%s, targetDevice=%s", 
               deviceFound ? "true" : "false", 
               targetDevice ? "valid" : "null");
+  debugPrintf(">>> About to check connection condition: deviceFound=%s && targetDevice=%s", 
+              deviceFound ? "true" : "false", 
+              targetDevice != nullptr ? "not-null" : "null");
   if (deviceFound && targetDevice != nullptr) {
     debugPrint("Target device found, attempting connection...");
     
