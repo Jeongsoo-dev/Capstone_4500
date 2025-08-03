@@ -45,7 +45,7 @@ NimBLEClient* pClient = nullptr;
 NimBLERemoteCharacteristic* pRemoteCharacteristic = nullptr;
 bool bleConnected = false;
 bool bleConnecting = false;
-const NimBLEAdvertisedDevice* targetDevice = nullptr;
+NimBLEAdvertisedDevice* targetDevice = nullptr;
 bool deviceFound = false;
 unsigned long connectionStartTime = 0;
 
@@ -99,7 +99,7 @@ class MyScanCallbacks: public NimBLEScanCallbacks {
     if (advertisedDevice->haveServiceUUID() && advertisedDevice->isAdvertisingService(SERVICE_UUID)) {
       debugPrint("Found target IMU device! Stopping scan...");
       deviceFound = true;
-      targetDevice = advertisedDevice;
+      targetDevice = new NimBLEAdvertisedDevice(*advertisedDevice);  // Create persistent copy
       NimBLEDevice::getScan()->stop();
     } else {
       debugPrint("  - Does not match our target service UUID");
@@ -198,7 +198,10 @@ void scanForIMU() {
   
   // Reset flags
   deviceFound = false;
-  targetDevice = nullptr;
+  if (targetDevice != nullptr) {
+    delete targetDevice;
+    targetDevice = nullptr;
+  }
   
   bleConnecting = true;
   debugPrint("Scanning for IMU device...");
