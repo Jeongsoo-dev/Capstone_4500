@@ -228,7 +228,13 @@ class MyScanCallbacks: public NimBLEScanCallbacks {
       debugPrint("Found target IMU device! Stopping scan...");
       deviceFound = true;
       targetDevice = advertisedDevice;
-      NimBLEDevice::getScan()->stop();
+      
+      // Stop the scan immediately
+      NimBLEScan* pScan = NimBLEDevice::getScan();
+      if (pScan->isScanning()) {
+        pScan->stop();
+        debugPrint("Scan stopped due to target device found.");
+      }
       } else {
       debugPrint("  - Does not match our target service UUID");
       }
@@ -481,7 +487,7 @@ void scanForIMU() {
   bleConnecting = true;
   debugPrint("Scanning for IMU device...");
   debugPrintf("Looking for service UUID: %s", SERVICE_UUID.toString().c_str());
-  debugPrint("Scan will run for 10 seconds...");
+  debugPrint("Scan will run for 5 seconds...");
   
   NimBLEScan* pScan = NimBLEDevice::getScan();
   pScan->setScanCallbacks(new MyScanCallbacks(), false);
@@ -490,9 +496,22 @@ void scanForIMU() {
   pScan->setActiveScan(true);
   
   // Start scan 
-  pScan->start(10, false); // Scan for 10 seconds - async, results handled in callbacks
+  pScan->start(5000, false); // Scan for 5 seconds - async, results handled in callbacks
   
-  // Scan completed (results handled in onScanEnd callback)
+  // Wait for scan to complete or device to be found
+  unsigned long scanStartTime = millis();
+  while (pScan->isScanning() && millis() - scanStartTime < 6000) { // Wait up to 6 seconds
+    delay(100);
+    if (deviceFound) {
+      break; // Exit early if device found
+    }
+  }
+  
+  // Ensure scan is stopped
+  if (pScan->isScanning()) {
+    pScan->stop();
+  }
+  
   debugPrint("Scan completed.");
   
   // Check if we found our target device
