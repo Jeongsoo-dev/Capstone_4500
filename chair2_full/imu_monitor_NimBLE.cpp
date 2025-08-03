@@ -98,9 +98,14 @@ class MyScanCallbacks: public NimBLEScanCallbacks {
     // Check if this device has our service UUID
     if (advertisedDevice->haveServiceUUID() && advertisedDevice->isAdvertisingService(SERVICE_UUID)) {
       debugPrint("Found target IMU device! Stopping scan...");
+      debugPrintf(">>> Setting deviceFound=true, creating targetDevice copy");
       deviceFound = true;
       targetDevice = new NimBLEAdvertisedDevice(*advertisedDevice);  // Create a copy
+      debugPrintf(">>> deviceFound=%s, targetDevice=%s", 
+                  deviceFound ? "true" : "false", 
+                  targetDevice ? "valid" : "null");
       NimBLEDevice::getScan()->stop();
+      debugPrint(">>> Scan stop called");
     } else {
       debugPrint("  - Does not match our target service UUID");
     }
@@ -109,6 +114,9 @@ class MyScanCallbacks: public NimBLEScanCallbacks {
 
   void onScanEnd(const NimBLEScanResults& results, int reason) override {
     debugPrintf("Scan ended. Found %d devices, reason: %d", results.getCount(), reason);
+    debugPrintf(">>> onScanEnd: deviceFound=%s, targetDevice=%s", 
+                deviceFound ? "true" : "false", 
+                targetDevice ? "valid" : "null");
   }
 };
 
@@ -214,12 +222,21 @@ void scanForIMU() {
   pScan->setWindow(449);
   pScan->setActiveScan(true);
   
-  // Start scan 
-  bool scanStarted = pScan->start(5000, false); // Scan for 5 seconds
+  debugPrintf(">>> Pre-scan state: deviceFound=%s, targetDevice=%s", 
+              deviceFound ? "true" : "false", 
+              targetDevice ? "valid" : "null");
   
-  // Scan completed
+  // Start scan - NimBLE uses milliseconds, start() then getResults() 
+  debugPrint("Starting 10-second scan...");
+  bool scanStarted = pScan->start(10000, false); // 10000ms (10 seconds), don't delete results
+  debugPrintf(">>> Scan start returned: %s", scanStarted ? "SUCCESS" : "FAILED");
+  
+  // Get scan results after completion
   NimBLEScanResults results = pScan->getResults();
   debugPrintf("Scan completed. Found %d devices total", results.getCount());
+  debugPrintf(">>> Immediately after getResults(): deviceFound=%s, targetDevice=%s", 
+              deviceFound ? "true" : "false", 
+              targetDevice ? "valid" : "null");
   
   // Check if we found our target device
   debugPrintf("Post-scan check: deviceFound=%s, targetDevice=%s", 
