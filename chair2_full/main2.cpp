@@ -30,7 +30,7 @@ const float armRadius = 200.0;  // mm - radius from center to actuator mount
 
 // -- Control Loop  
 const float actuatorSpeed = 84.0; // mm/s - max actuator speed at 100% duty cycle
-const int updateInterval = 10;  // ms - control loop interval (100 Hz)
+const int updateInterval = 100;  // ms - control loop interval (20 Hz) - more realistic for physical motors
 
 // -- Motion Cueing Factors (heave disabled)
 const float pitchCueFactor = 0.1; // degrees of extra pitch per °/s
@@ -39,12 +39,12 @@ const float rollCueFactor = 0.1;  // degrees of extra roll per °/s
 // -- Smoothing Parameters
 const float IMU_SMOOTHING_FACTOR = 0.3; // Low-pass filter strength (user adjusted)
 const float TARGET_RATE_LIMIT = 20.0; // mm/s max rate of target change (INCREASED FOR DEBUG)
-const float DEADBAND_THRESHOLD = 0.5; // mm - ignore changes smaller than this (reasonable for IMU noise)
+const float DEADBAND_THRESHOLD = 3; // mm - ignore changes smaller than this (reasonable for IMU noise)
 const float REDUCED_GAIN = 4.0; // Reduced gain for smoother response
 
 // -- Advanced Motion Control Parameters (TEMPORARILY DISABLED FOR DEBUG)
-const bool ENABLE_DATA_RATE_LIMITING = false;  // Disabled when sequential targeting is active (incompatible)
-const unsigned long IMU_DATA_INTERVAL_MS = 500;  // Process IMU data max every 500ms (2Hz)
+const bool ENABLE_DATA_RATE_LIMITING = true;   // Limit IMU data processing rate for stability
+const unsigned long IMU_DATA_INTERVAL_MS = 100;  // Process IMU data max every 100ms (10Hz) - reasonable balance
 const bool ENABLE_SEQUENTIAL_TARGETING = true;   // Individual actuators wait to reach target before accepting new ones
 
 // -- Lookup Table Configuration
@@ -297,11 +297,10 @@ void loop() {
     
     // Show advanced motion control status
     if (systemHomed) {
-      debugPrintf("Motion - DataLimit: %s | Sequential: %s | AllReached: %s%s", 
+      debugPrintf("Motion - DataLimit: %s | Sequential: %s | AllReached: %s", 
                   ENABLE_DATA_RATE_LIMITING ? "ON" : "OFF",
                   ENABLE_SEQUENTIAL_TARGETING ? "ON" : "OFF", 
-                  allTargetsReached() ? "YES" : "NO",
-                  (ENABLE_DATA_RATE_LIMITING && ENABLE_SEQUENTIAL_TARGETING) ? " [CONFLICT!]" : "");
+                  allTargetsReached() ? "YES" : "NO");
     }
     
     lastStatusTime = millis();
@@ -684,7 +683,6 @@ void processIMUData() {
   }
   
   // 1. Data Rate Limiting - only process at maximum specified rate
-  // NOTE: Incompatible with sequential targeting - either use one or the other
   if (ENABLE_DATA_RATE_LIMITING && !shouldProcessIMUData()) {
     debugPrint("[DEBUG] IMU processing skipped: Data rate limiting active");
     return; // Skip this data point
@@ -1230,6 +1228,15 @@ bool allTargetsReached() {
 }
 
 void updateTargetReachedStatus() {
+  // Debug: Show current vs target positions
+  static unsigned long lastPositionLog = 0;
+  if (millis() - lastPositionLog > 2000) { // Every 2 seconds
+    debugPrintf("[POS] Current: %.1f,%.1f,%.1f mm | Target: %.1f,%.1f,%.1f mm", 
+                currentLength[0], currentLength[1], currentLength[2],
+                targetLength[0], targetLength[1], targetLength[2]);
+    lastPositionLog = millis();
+  }
+  
   // Update the target reached status for each actuator using the same logic as precision stop
   for (int i = 0; i < 3; i++) {
     targetsReached[i] = (abs(targetLength[i] - currentLength[i]) < 0.5); // Same as precision stop threshold
@@ -1299,19 +1306,34 @@ void updateActuatorsSmoothly() {
     int pwmValue = (int)((abs(desiredSpeed_mmPerSec) / actuatorSpeed) * 255.0);
     pwmValue = constrain(pwmValue, 0, 255);
     
+    // Apply minimum PWM threshold (20% = 51) to overcome static friction and load
+    const int MIN_PWM_THRESHOLD = 80; // 20% of 255 - minimum to overcome load
+    if (pwmValue > 0 && pwmValue < MIN_PWM_THRESHOLD) {
+      pwmValue = MIN_PWM_THRESHOLD;
+    }
+    
     // Apply direction (positive = extend, negative = retract)
     int motorSpeed = (desiredSpeed_mmPerSec >= 0) ? pwmValue : -pwmValue;
+    
+    // Debug: Show PWM commands being sent to motors (before position update)
+    float positionError = targetLength[i] - currentLength[i];
+    debugPrintf("[PWM] Motor %d: error=%.1fmm, speed=%.1fmm/s, PWM=%d", 
+                i + 1, positionError, desiredSpeed_mmPerSec, motorSpeed);
     
     // Update current position based on actual movement that will occur
     // Calculate actual speed that will be achieved with this PWM
     float actualSpeed_mmPerSec = (motorSpeed / 255.0) * actuatorSpeed;
-    float actualMovement_mm = actualSpeed_mmPerSec * (updateInterval / 1000.0);
+    
+    // Apply response delay factor to account for motor/load inertia (more conservative simulation)
+    const float RESPONSE_DELAY_FACTOR = 0.7; // Actuators achieve 70% of expected movement due to inertia/load
+    float actualMovement_mm = actualSpeed_mmPerSec * (updateInterval / 1000.0) * RESPONSE_DELAY_FACTOR;
     currentLength[i] += actualMovement_mm;
     
     // Prevent overshoot - if we're very close, just set to target
     if (abs(targetLength[i] - currentLength[i]) < 0.5) { // Within 0.5mm
       currentLength[i] = targetLength[i];
       motorSpeed = 0; // Stop motor when at target
+      debugPrintf("[PWM] Motor %d: Precision stop - set to target", i + 1);
     }
     
     // Motors are numbered 1, 2, 3 in setMotorSpeed
