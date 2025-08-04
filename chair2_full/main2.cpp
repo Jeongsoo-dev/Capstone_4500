@@ -39,7 +39,7 @@ const float rollCueFactor = 0.1;  // degrees of extra roll per °/s
 // -- Smoothing Parameters
 const float IMU_SMOOTHING_FACTOR = 0.3; // Low-pass filter strength (user adjusted)
 const float TARGET_RATE_LIMIT = 50.0; // mm/s max rate of target change (INCREASED FOR DEBUG)
-const float DEADBAND_THRESHOLD = 5; // mm - ignore changes smaller than this (reasonable for IMU noise)
+const float DEADBAND_THRESHOLD = 5.0; // mm - ignore changes smaller than this (reasonable for IMU noise)
 const float REDUCED_GAIN = 4.0; // Reduced gain for smoother response
 
 // -- Advanced Motion Control Parameters (TEMPORARILY DISABLED FOR DEBUG)
@@ -1297,6 +1297,8 @@ float computeActuatorLength(float pitchDeg, float rollDeg, float angleDeg) {
 // =============================================================================
 // Moves actuators towards their target lengths incrementally.
 void updateActuatorsSmoothly() {
+  const int MIN_PWM_THRESHOLD = 51; // 20% of 255 - minimum to overcome friction
+  
   for (int i = 0; i < 3; i++) {
     // Calculate required speed based on position error and maximum actuator speed
     float positionError = targetLength[i] - currentLength[i];
@@ -1312,18 +1314,14 @@ void updateActuatorsSmoothly() {
     // Limit to maximum actuator speed
     desiredSpeed_mmPerSec = constrain(desiredSpeed_mmPerSec, -maxAllowedSpeed, maxAllowedSpeed);
     
-    // Convert desired speed (mm/s) to PWM value with minimum friction threshold
-    // Minimum 30% PWM (77/255) required to overcome static friction
-    const int MIN_PWM_THRESHOLD = 77; // 30% of 255
-    const int MAX_PWM = 255;
-    const int PWM_RANGE = MAX_PWM - MIN_PWM_THRESHOLD; // 178 (from 77 to 255)
+    // Convert desired speed (mm/s) to PWM value (0-255)
+    // Since actuatorSpeed (84 mm/s) corresponds to PWM 255 (100% duty cycle)
+    int pwmValue = (int)((abs(desiredSpeed_mmPerSec) / actuatorSpeed) * 255.0);
+    pwmValue = constrain(pwmValue, 0, 255);
     
-    int pwmValue = 0;
-    if (abs(desiredSpeed_mmPerSec) > 0.1) { // Only apply PWM if meaningful speed requested
-      // Scale speed from 0-84mm/s to PWM range 77-255 (30%-100%)
-      float speedRatio = abs(desiredSpeed_mmPerSec) / actuatorSpeed; // 0.0 to 1.0
-      pwmValue = MIN_PWM_THRESHOLD + (int)(speedRatio * PWM_RANGE);
-      pwmValue = constrain(pwmValue, MIN_PWM_THRESHOLD, MAX_PWM);
+    // Apply minimum PWM threshold (20% = 51) to overcome static friction
+    if (pwmValue > 0 && pwmValue < MIN_PWM_THRESHOLD) {
+      pwmValue = MIN_PWM_THRESHOLD;
     }
     
     // Apply direction (positive = extend, negative = retract)
@@ -1335,14 +1333,13 @@ void updateActuatorsSmoothly() {
                 i + 1, positionError, desiredSpeed_mmPerSec, motorSpeed, abs(motorSpeed) * 100 / 255);
     
     // Update current position based on actual movement that will occur
-    // Calculate actual speed that will be achieved with this PWM (accounting for 30% minimum)
+    // Calculate actual speed that will be achieved with this PWM
+    // Account for minimum PWM threshold - motors don't move below 20% PWM
     float actualSpeed_mmPerSec = 0.0;
     if (abs(motorSpeed) >= MIN_PWM_THRESHOLD) {
-      // Map PWM back to speed: PWM range 77-255 maps to speed range 0-84 mm/s  
-      float pwmRatio = (abs(motorSpeed) - MIN_PWM_THRESHOLD) / (float)PWM_RANGE; // 0.0 to 1.0
-      actualSpeed_mmPerSec = pwmRatio * actuatorSpeed; // 0 to 84 mm/s
-      if (motorSpeed < 0) actualSpeed_mmPerSec = -actualSpeed_mmPerSec; // Apply direction
+      actualSpeed_mmPerSec = (motorSpeed / 255.0) * actuatorSpeed;
     }
+    // If PWM is below threshold, no actual movement occurs
     float actualMovement_mm = actualSpeed_mmPerSec * (updateInterval / 1000.0);
     currentLength[i] += actualMovement_mm;
     
