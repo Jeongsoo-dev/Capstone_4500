@@ -677,6 +677,12 @@ bool parseFullIMUPacket(uint8_t* data, size_t length) {
 void processIMUData() {
   if (!imuData.dataValid) return;
   
+  // Don't process IMU data until system is homed to prevent lookup table errors
+  if (!systemHomed) {
+    debugPrint("[DEBUG] IMU processing skipped: System not homed yet");
+    return;
+  }
+  
   // 1. Data Rate Limiting - only process at maximum specified rate
   // NOTE: Incompatible with sequential targeting - either use one or the other
   if (ENABLE_DATA_RATE_LIMITING && !shouldProcessIMUData()) {
@@ -757,13 +763,14 @@ void processIMUData() {
   
   // Update target lengths with smoothed values
   // With sequential targeting, only update individual actuators that have reached their current targets
+  // EXCEPTION: During homing (when system is not homed yet), allow all updates to prevent deadlock
   for (int i = 0; i < 3; i++) {
-    if (!ENABLE_SEQUENTIAL_TARGETING || targetsReached[i]) {
-      // Either sequential targeting is disabled, or this actuator has reached its target
+    if (!ENABLE_SEQUENTIAL_TARGETING || !systemHomed || targetsReached[i]) {
+      // Either sequential targeting is disabled, system is still homing, or this actuator has reached its target
       targetLength[i] = newTargets[i];
       previousTargets[i] = newTargets[i];
     } else {
-      // Sequential targeting enabled and actuator hasn't reached target - keep current target
+      // Sequential targeting enabled, system homed, and actuator hasn't reached target - keep current target
       debugPrintf("[DEBUG] Actuator %d still moving (%.1fmm->%.1fmm), keeping current target", 
                   i + 1, currentLength[i], targetLength[i]);
     }
