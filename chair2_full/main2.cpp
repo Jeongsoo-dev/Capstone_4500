@@ -30,7 +30,7 @@ const float armRadius = 200.0;  // mm - radius from center to actuator mount
 
 // -- Control Loop  
 const float actuatorSpeed = 84.0; // mm/s - max actuator speed at 100% duty cycle
-const int updateInterval = 20;  // ms - control loop interval (100 Hz)
+const int updateInterval = 10;  // ms - control loop interval (100 Hz)
 
 // -- Motion Cueing Factors (heave disabled)
 const float pitchCueFactor = 0.1; // degrees of extra pitch per °/s
@@ -39,13 +39,13 @@ const float rollCueFactor = 0.1;  // degrees of extra roll per °/s
 // -- Smoothing Parameters
 const float IMU_SMOOTHING_FACTOR = 0.3; // Low-pass filter strength (user adjusted)
 const float TARGET_RATE_LIMIT = 50.0; // mm/s max rate of target change (INCREASED FOR DEBUG)
-const float DEADBAND_THRESHOLD = 5.0; // mm - ignore changes smaller than this (reasonable for IMU noise)
+const float DEADBAND_THRESHOLD = 3; // mm - ignore changes smaller than this (reasonable for IMU noise)
 const float REDUCED_GAIN = 4.0; // Reduced gain for smoother response
 
 // -- Advanced Motion Control Parameters (TEMPORARILY DISABLED FOR DEBUG)
 const bool ENABLE_DATA_RATE_LIMITING = true;  // Disabled when sequential targeting is active
 const unsigned long IMU_DATA_INTERVAL_MS = 50;  // Process IMU data max every 500ms (2Hz)
-const bool ENABLE_SEQUENTIAL_TARGETING = true;   // Individual actuators wait to reach target before accepting new ones
+const bool ENABLE_SEQUENTIAL_TARGETING = false;   // Individual actuators wait to reach target before accepting new ones
 
 // -- Lookup Table Configuration
 const char* LOOKUP_TABLE_FILE = "/lookup_table.txt";
@@ -406,16 +406,7 @@ void performHomingSequence() {
   for (int i = 0; i < 3; i++) {
     targetLength[i] = neutralLength[i];
     currentLength[i] = minLength; // Set current position to minimum since we're at bottom
-    targetsReached[i] = false; // Reset targets reached status since we have new large targets
   }
-  
-  // Debug: Show initial homing state
-  debugPrintf("[HOMING] Initial state - Current: %.1f,%.1f,%.1f | Target: %.1f,%.1f,%.1f", 
-              currentLength[0], currentLength[1], currentLength[2],
-              targetLength[0], targetLength[1], targetLength[2]);
-  debugPrintf("[HOMING] targetsReached: %s,%s,%s | systemHomed: %s", 
-              targetsReached[0] ? "T" : "F", targetsReached[1] ? "T" : "F", targetsReached[2] ? "T" : "F",
-              systemHomed ? "T" : "F");
   
   debugPrint("[*] Moving to neutral positions...");
   
@@ -427,15 +418,6 @@ void performHomingSequence() {
   
   while (!allAtNeutral && (millis() - neutralStartTime < maxNeutralTime)) {
     updateActuatorsSmoothly();
-    
-    // Debug: Show movement progress every 500ms
-    static unsigned long lastHomingLog = 0;
-    if (millis() - lastHomingLog > 500) {
-      debugPrintf("[HOMING] Progress - Current: %.1f,%.1f,%.1f | Errors: %.1f,%.1f,%.1f mm", 
-                  currentLength[0], currentLength[1], currentLength[2],
-                  targetLength[0] - currentLength[0], targetLength[1] - currentLength[1], targetLength[2] - currentLength[2]);
-      lastHomingLog = millis();
-    }
     
     // Check if all actuators are close enough to neutral positions
     bool actuator1AtNeutral = abs(currentLength[0] - neutralLength[0]) <= positionTolerance;
@@ -695,12 +677,6 @@ bool parseFullIMUPacket(uint8_t* data, size_t length) {
 void processIMUData() {
   if (!imuData.dataValid) return;
   
-  // Don't process IMU data until system is homed to prevent lookup table errors
-  if (!systemHomed) {
-    debugPrint("[DEBUG] IMU processing skipped: System not homed yet");
-    return;
-  }
-  
   // 1. Data Rate Limiting - only process at maximum specified rate
   // NOTE: Incompatible with sequential targeting - either use one or the other
   if (ENABLE_DATA_RATE_LIMITING && !shouldProcessIMUData()) {
@@ -781,14 +757,13 @@ void processIMUData() {
   
   // Update target lengths with smoothed values
   // With sequential targeting, only update individual actuators that have reached their current targets
-  // EXCEPTION: During homing (when system is not homed yet), allow all updates to prevent deadlock
   for (int i = 0; i < 3; i++) {
-    if (!ENABLE_SEQUENTIAL_TARGETING || !systemHomed || targetsReached[i]) {
-      // Either sequential targeting is disabled, system is still homing, or this actuator has reached its target
+    if (!ENABLE_SEQUENTIAL_TARGETING || targetsReached[i]) {
+      // Either sequential targeting is disabled, or this actuator has reached its target
       targetLength[i] = newTargets[i];
       previousTargets[i] = newTargets[i];
     } else {
-      // Sequential targeting enabled, system homed, and actuator hasn't reached target - keep current target
+      // Sequential targeting enabled and actuator hasn't reached target - keep current target
       debugPrintf("[DEBUG] Actuator %d still moving (%.1fmm->%.1fmm), keeping current target", 
                   i + 1, currentLength[i], targetLength[i]);
     }
@@ -1297,8 +1272,6 @@ float computeActuatorLength(float pitchDeg, float rollDeg, float angleDeg) {
 // =============================================================================
 // Moves actuators towards their target lengths incrementally.
 void updateActuatorsSmoothly() {
-  const int MIN_PWM_THRESHOLD = 51; // 20% of 255 - minimum to overcome friction
-  
   for (int i = 0; i < 3; i++) {
     // Calculate required speed based on position error and maximum actuator speed
     float positionError = targetLength[i] - currentLength[i];
@@ -1319,27 +1292,12 @@ void updateActuatorsSmoothly() {
     int pwmValue = (int)((abs(desiredSpeed_mmPerSec) / actuatorSpeed) * 255.0);
     pwmValue = constrain(pwmValue, 0, 255);
     
-    // Apply minimum PWM threshold (20% = 51) to overcome static friction
-    if (pwmValue > 0 && pwmValue < MIN_PWM_THRESHOLD) {
-      pwmValue = MIN_PWM_THRESHOLD;
-    }
-    
     // Apply direction (positive = extend, negative = retract)
     int motorSpeed = (desiredSpeed_mmPerSec >= 0) ? pwmValue : -pwmValue;
     
-    // Debug: Show PWM commands being sent to motors (before position update)
-    float positionError = targetLength[i] - currentLength[i];
-    debugPrintf("[PWM] Motor %d: error=%.1fmm, speed=%.1fmm/s, PWM=%d (%d%%)", 
-                i + 1, positionError, desiredSpeed_mmPerSec, motorSpeed, abs(motorSpeed) * 100 / 255);
-    
     // Update current position based on actual movement that will occur
     // Calculate actual speed that will be achieved with this PWM
-    // Account for minimum PWM threshold - motors don't move below 20% PWM
-    float actualSpeed_mmPerSec = 0.0;
-    if (abs(motorSpeed) >= MIN_PWM_THRESHOLD) {
-      actualSpeed_mmPerSec = (motorSpeed / 255.0) * actuatorSpeed;
-    }
-    // If PWM is below threshold, no actual movement occurs
+    float actualSpeed_mmPerSec = (motorSpeed / 255.0) * actuatorSpeed;
     float actualMovement_mm = actualSpeed_mmPerSec * (updateInterval / 1000.0);
     currentLength[i] += actualMovement_mm;
     
@@ -1347,7 +1305,6 @@ void updateActuatorsSmoothly() {
     if (abs(targetLength[i] - currentLength[i]) < 0.5) { // Within 0.5mm
       currentLength[i] = targetLength[i];
       motorSpeed = 0; // Stop motor when at target
-      debugPrintf("[PWM] Motor %d: Precision stop - set to target", i + 1);
     }
     
     // Motors are numbered 1, 2, 3 in setMotorSpeed
